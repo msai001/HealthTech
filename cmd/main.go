@@ -26,22 +26,29 @@ var db *sql.DB
 
 const sharedStyles = `
 	<style>
+		:root { --primary: #10b981; --primary-hover: #059669; --danger: #ef4444; --bg: #f8fafc; --text: #1e293b; }
 		* { box-sizing: border-box; margin: 0; padding: 0; }
-		body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; color: #333; }
-		.container { max-width: 900px; margin: 40px auto; padding: 20px; }
-		.card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }
-		h1 { color: #2c3e50; margin-bottom: 20px; text-align: center; }
-		.user-info { text-align: right; margin-bottom: 10px; font-weight: bold; color: #7f8c8d; }
-		.btn { display: block; width: 100%; padding: 12px; background: #3498db; color: white; text-align: center; border-radius: 6px; text-decoration: none; border: none; font-size: 16px; cursor: pointer; }
-		.btn:hover { background: #2980b9; }
-		.form-group { margin-bottom: 15px; }
-		label { display: block; margin-bottom: 5px; font-weight: 600; }
-		input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
-		table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-		th, td { padding: 12px; border: 1px solid #eee; text-align: left; }
-		th { background: #f8f9fa; }
-		tr:nth-child(even) { background: #fcfcfc; }
-		.empty-msg { text-align: center; color: #95a5a6; padding: 20px; }
+		body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+		.container { max-width: 900px; margin: 40px auto; padding: 0 20px; }
+		.card { background: white; padding: 30px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.03); margin-bottom: 25px; border: 1px solid #e2e8f0; }
+		h1 { font-size: 24px; font-weight: 800; color: #0f172a; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+		.user-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+		.email-badge { background: #dcfce7; color: #166534; padding: 5px 15px; border-radius: 50px; font-size: 13px; font-weight: 600; }
+		.btn { cursor: pointer; border: none; border-radius: 10px; font-weight: 700; transition: all 0.2s; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+		.btn-primary { background: var(--primary); color: white; width: 100%; padding: 14px; font-size: 16px; }
+		.btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
+		.btn-delete { background: #fee2e2; color: var(--danger); padding: 8px; font-size: 12px; }
+		.btn-delete:hover { background: var(--danger); color: white; }
+		.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+		.form-group { text-align: left; margin-bottom: 15px; }
+		label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: #64748b; }
+		input, select { width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 15px; outline: none; }
+		input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1); }
+		table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+		th { text-align: left; padding: 12px; font-size: 12px; color: #94a3b8; text-transform: uppercase; border-bottom: 2px solid #f1f5f9; }
+		td { padding: 16px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
+		.doctor-tag { background: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+		@media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
 	</style>
 `
 
@@ -52,9 +59,7 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = db.Ping()
-	if err != nil {
-		// Попытка с SSL для Render
+	if err = db.Ping(); err != nil {
 		db, _ = sql.Open("postgres", connStr+"?sslmode=require")
 	}
 }
@@ -62,18 +67,22 @@ func initDB() {
 func main() {
 	initDB()
 
-	// Главная страница
+	// Главная
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
-		fmt.Fprintf(w, `<html><head>%s</head><body>
-			<div class="container"><div class="card">
-				<h1>HealthTech System</h1>
-				<a href="%s" class="btn">Войти через Google</a>
-			</div></div>
+		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
+			<div class="container" style="text-align:center; margin-top: 100px;">
+				<div class="card">
+					<div style="font-size:48px;">🌿</div>
+					<h1>HealthTech Pro</h1>
+					<p style="color:#64748b; margin-bottom:30px;">Профессиональное управление медицинскими записями</p>
+					<a href="%s" class="btn btn-primary">Войти через Google</a>
+				</div>
+			</div>
 		</body></html>`, sharedStyles, url)
 	})
 
-	// Callback после логина
+	// Панель управления
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
@@ -87,82 +96,92 @@ func main() {
 		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
-		// Загружаем записи из базы
-		rows, err := db.Query("SELECT patient_name, appointment_date, doctor_name FROM appointments ORDER BY id DESC")
-		var tableBody string
-		if err != nil {
-			tableBody = "<tr><td colspan='3' class='empty-msg'>Ошибка загрузки данных</td></tr>"
-		} else {
-			count := 0
-			for rows.Next() {
-				var pName, pDate, pDoc string
-				rows.Scan(&pName, &pDate, &pDoc)
-				tableBody += fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td></tr>", pName, pDate, pDoc)
-				count++
-			}
-			if count == 0 {
-				tableBody = "<tr><td colspan='3' class='empty-msg'>Записей пока нет</td></tr>"
-			}
-			rows.Close()
+		// Загрузка записей
+		rows, _ := db.Query("SELECT id, patient_name, appointment_date, doctor_name FROM appointments WHERE user_email = $1 ORDER BY id DESC", userInfo.Email)
+		defer rows.Close()
+
+		var rowsHtml string
+		for rows.Next() {
+			var id int
+			var pName, pDate, pDoc string
+			rows.Scan(&id, &pName, &pDate, &pDoc)
+			rowsHtml += fmt.Sprintf(`
+				<tr>
+					<td><b>%s</b></td>
+					<td>%s</td>
+					<td><span class="doctor-tag">%s</span></td>
+					<td style="text-align:right;">
+						<a href="/delete?id=%d&email=%s" class="btn btn-delete" onclick="return confirm('Удалить эту запись?')">🗑️</a>
+					</td>
+				</tr>`, pName, pDate, pDoc, id, userInfo.Email)
+		}
+
+		if rowsHtml == "" {
+			rowsHtml = `<tr><td colspan="4" style="text-align:center; padding:40px; color:#94a3b8;">У вас пока нет активных записей</td></tr>`
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><head>%s</head><body>
+		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
 			<div class="container">
-				<div class="user-info">Вы вошли как: %s</div>
+				<div class="user-nav">
+					<span style="font-weight:800; font-size:20px;">🌿 HealthTech</span>
+					<span class="email-badge">%s</span>
+				</div>
+				
 				<div class="card">
-					<h1>Новая запись</h1>
+					<h1>➕ Новая запись</h1>
 					<form action="/save" method="POST">
 						<input type="hidden" name="user_email" value="%s">
 						<div class="form-group">
 							<label>ФИО Пациента</label>
-							<input type="text" name="patient_name" placeholder="Иван Иванов" required>
+							<input type="text" name="patient_name" placeholder="Введите полное имя" required>
 						</div>
-						<div class="form-group">
-							<label>Дата приема</label>
-							<input type="date" name="date" required>
+						<div class="form-grid">
+							<div class="form-group">
+								<label>Дата приема</label>
+								<input type="date" name="date" required>
+							</div>
+							<div class="form-group">
+								<label>Врач</label>
+								<select name="doctor">
+									<option>Терапевт</option><option>Невролог</option>
+									<option>Кардиолог</option><option>Хирург</option>
+								</select>
+							</div>
 						</div>
-						<div class="form-group">
-							<label>Врач</label>
-							<select name="doctor">
-								<option>Терапевт</option>
-								<option>Кардиолог</option>
-								<option>Стоматолог</option>
-							</select>
-						</div>
-						<button type="submit" class="btn">Добавить в базу</button>
+						<button type="submit" class="btn btn-primary">Создать запись</button>
 					</form>
 				</div>
 
 				<div class="card">
-					<h1>Журнал записей</h1>
+					<h1>📅 Журнал приемов</h1>
 					<table>
-						<thead><tr><th>Пациент</th><th>Дата</th><th>Врач</th></tr></thead>
+						<thead><tr><th>Пациент</th><th>Дата</th><th>Врач</th><th></th></tr></thead>
 						<tbody>%s</tbody>
 					</table>
 				</div>
 			</div>
-		</body></html>`, sharedStyles, userInfo.Email, userInfo.Email, tableBody)
+		</body></html>`, sharedStyles, userInfo.Email, userInfo.Email, rowsHtml)
 	})
 
 	// Сохранение
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			pName := r.FormValue("patient_name")
-			pDate := r.FormValue("date")
-			pDoc := r.FormValue("doctor")
-			uEmail := r.FormValue("user_email")
-
-			_, err := db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
-				pName, pDate, pDoc, uEmail)
-
-			if err != nil {
-				http.Error(w, "DB Error", 500)
-				return
-			}
-			// Возвращаем на главную после сохранения
-			fmt.Fprintf(w, `<script>alert("Запись сохранена!"); window.location.href="/callback";</script>`)
+			db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
+				r.FormValue("patient_name"), r.FormValue("date"), r.FormValue("doctor"), r.FormValue("user_email"))
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<script>window.history.back(); setTimeout(()=>location.reload(), 100);</script>`)
 		}
+	})
+
+	// Удаление
+	http.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		email := r.URL.Query().Get("email")
+		// Простая проверка: удаляем только если email совпадает
+		db.Exec("DELETE FROM appointments WHERE id = $1 AND user_email = $2", id, email)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<script>window.history.back(); setTimeout(()=>location.reload(), 100);</script>`)
 	})
 
 	port := os.Getenv("PORT")
