@@ -47,69 +47,39 @@ func main() {
 		log.Printf("Авторизация успешна для токена: %s", token.TokenType)
 		// 3. Обработчик сохранения (сработает при нажатии "Записать")
 		http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
+			// ... весь внутренний код до закрывающейся })
+		})
 
-			// Получаем данные из формы
-			name := r.FormValue("name")
-			date := r.FormValue("date")
-			doctor := r.FormValue("doctor")
+		// ... здесь заканчивается блок http.HandleFunc("/callback", ...)
+	}) // <--- Это закрывающая скобка CALLBACK
 
-			// Пока мы не настроили базу на Render, просто выведем подтверждение
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, `
+	// ВСТАВЛЯЙ СЮДА:
+	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		name := r.FormValue("name")
+		date := r.FormValue("date")
+		doctor := r.FormValue("doctor")
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `
 			<html><body style="text-align:center;padding:50px;font-family:Arial;">
-				<h2 style="color: #27ae60;">Запись успешно создана!</h2>
+				<h2 style="color: #27ae60;">✅ Запись создана!</h2>
 				<p>Пациент: <b>%s</b></p>
 				<p>Дата: %s</p>
 				<p>Врач: %s</p>
 				<br>
-				<a href="/callback" style="color: #4285F4;">Вернуться к форме</a>
+				<a href="/" style="display:inline-block; background:#4285F4; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">На главную</a>
 			</body></html>
 		`, name, date, doctor)
-
-			log.Printf("Новая запись: %s, %s, %s", name, date, doctor)
-		})
-
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `
-			<html>
-			<head>
-				<style>
-					body { font-family: Arial; background: #f4f7f6; display: flex; justify-content: center; padding: 20px; }
-					.card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 400px; }
-					input, select, textarea { width: 100%%; margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
-					button { width: 100%%; background: #27ae60; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; }
-				</style>
-			</head>
-			<body>
-				<div class="card">
-					<h2>Запись пациента</h2>
-					<form action="/save" method="POST">
-						<label>Имя пациента</label>
-						<input type="text" name="name" required>
-						<label>Дата приема</label>
-						<input type="date" name="date" required>
-						<label>Врач</label>
-						<select name="doctor">
-							<option>Терапевт</option>
-							<option>Хирург</option>
-						</select>
-						<button type="submit">Записать</button>
-					</form>
-				</div>
-			</body>
-			</html>
-		`)
 	})
 
-	// 3. Запуск сервера
+	// Дальше идет твой старый код запуска сервера:
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server starting on port %s...", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
+} // Конец функции main
