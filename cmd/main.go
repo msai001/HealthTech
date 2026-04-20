@@ -19,18 +19,39 @@ var googleOAuthConfig = &oauth2.Config{
 	Endpoint:     google.Endpoint,
 }
 
+const sharedStyles = `
+	<style>
+		* { box-sizing: border-box; margin: 0; padding: 0; }
+		body { font-family: 'Inter', -apple-system, sans-serif; background: #f0f4f8; color: #333; }
+		.container { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+		.card { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); width: 100%%; max-width: 450px; text-align: center; }
+		h1 { color: #1a365d; margin-bottom: 10px; font-size: 28px; }
+		p { color: #64748b; margin-bottom: 30px; }
+		.btn-google { display: inline-flex; align-items: center; background: #fff; color: #1f2937; border: 1px solid #d1d5db; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+		.form-group { text-align: left; margin-bottom: 20px; }
+		label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+		input, select { width: 100%%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 16px; }
+		.btn-submit { width: 100%%; background: #3b82f6; color: white; border: none; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+	</style>
+`
+
 func main() {
-	// 1. Главная страница
+	// 1. ГЛАВНАЯ
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><body style="text-align:center;padding:50px;font-family:Arial;">
-			<h1>HealthTech System</h1>
-			<a href="%s" style="background:#4285F4;color:white;padding:15px;text-decoration:none;border-radius:5px;font-weight:bold;">Войти через Google</a>
-		</body></html>`, url)
+		fmt.Fprintf(w, `<html><head>%s</head><body>
+			<div class="container">
+				<div class="card">
+					<h1>HealthTech</h1>
+					<p>Медицинская система записи. Авторизуйтесь для продолжения.</p>
+					<a href="%s" class="btn-google">Войти через Google</a>
+				</div>
+			</div>
+		</body></html>`, sharedStyles, url)
 	})
 
-	// 2. Callback (выдает форму)
+	// 2. CALLBACK
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
@@ -39,29 +60,39 @@ func main() {
 		}
 		_, err := googleOAuthConfig.Exchange(context.Background(), code)
 		if err != nil {
-			http.Error(w, "Ошибка токена", http.StatusInternalServerError)
+			http.Error(w, "Ошибка авторизации", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `
-			<html><body style="font-family:Arial; background:#f4f7f6; display:flex; justify-content:center; padding:20px;">
-				<div style="background:white; padding:30px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.1); width:400px;">
-					<h2>Запись пациента</h2>
+		fmt.Fprintf(w, `<html><head>%s</head><body>
+			<div class="container">
+				<div class="card">
+					<h1>Запись пациента</h1>
 					<form action="/save" method="POST">
-						<p>Имя пациента:<br><input type="text" name="name" style="width:100%%; padding:8px;" required></p>
-						<p>Дата приема:<br><input type="date" name="date" style="width:100%%; padding:8px;" required></p>
-						<p>Врач:<br><select name="doctor" style="width:100%%; padding:8px;">
-							<option>Терапевт</option>
-							<option>Хирург</option>
-						</select></p>
-						<button type="submit" style="width:100%%; background:#27ae60; color:white; border:none; padding:10px; border-radius:5px; cursor:pointer;">Записать</button>
+						<div class="form-group">
+							<label>ФИО</label>
+							<input type="text" name="name" required>
+						</div>
+						<div class="form-group">
+							<label>Дата</label>
+							<input type="date" name="date" required>
+						</div>
+						<div class="form-group">
+							<label>Врач</label>
+							<select name="doctor">
+								<option>Терапевт</option>
+								<option>Хирург</option>
+							</select>
+						</div>
+						<button type="submit" class="btn-submit">Записать</button>
 					</form>
 				</div>
-			</body></html>`)
+			</div>
+		</body></html>`, sharedStyles)
 	})
 
-	// 3. Сохранение (страница успеха)
+	// 3. СОХРАНЕНИЕ
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -69,18 +100,20 @@ func main() {
 		}
 		name := r.FormValue("name")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `
-			<div style="text-align:center; padding:50px; font-family:Arial;">
-				<h2 style="color:#27ae60;">✅ Пациент %s записан!</h2>
-				<br><a href="/" style="background:#4285F4; color:white; padding:10px; text-decoration:none; border-radius:5px;">На главную</a>
-			</div>`, name)
+		fmt.Fprintf(w, `<html><head>%s</head><body>
+			<div class="container">
+				<div class="card">
+					<h1>✅ Готово</h1>
+					<p>Пациент <strong>%s</strong> записан.</p>
+					<a href="/" class="btn-submit" style="text-decoration:none; display:block;">На главную</a>
+				</div>
+			</div>
+		</body></html>`, sharedStyles, name)
 	})
 
-	// 4. Запуск
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Starting server on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
