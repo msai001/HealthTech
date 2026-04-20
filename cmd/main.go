@@ -11,7 +11,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// Глобальная переменная для конфига
 var googleOAuthConfig = &oauth2.Config{
 	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
@@ -25,42 +24,65 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
 		fmt.Fprintf(w, `<html><body style="text-align:center;padding:50px;font-family:Arial;">
-			<h1>HealthTech</h1>
+			<h1>HealthTech System</h1>
 			<a href="%s" style="background:#4285F4;color:white;padding:15px;text-decoration:none;border-radius:5px;font-weight:bold;">Войти через Google</a>
 		</body></html>`, url)
 	})
 
-	// 2. Обработчик Callback
+	// 2. Обработчик Callback (выдает форму после входа)
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			http.Error(w, "No code in request", http.StatusBadRequest)
+			http.Error(w, "Код не получен", http.StatusBadRequest)
 			return
 		}
 
-		// Обмениваем код на токен
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
 		if err != nil {
 			log.Printf("Token exchange error: %v", err)
-			http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
+			http.Error(w, "Ошибка авторизации", http.StatusInternalServerError)
 			return
 		}
 
-		// Используем токен, чтобы Go не ругался (UnusedVar)
-		log.Printf("Token received! Type: %s", token.TokenType)
+		log.Printf("Авторизация успешна для токена: %s", token.TokenType)
 
-		fmt.Fprintf(w, "<h1>Успешный вход!</h1><p>Вы успешно авторизованы в HealthTech.</p>")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `
+			<html>
+			<head>
+				<style>
+					body { font-family: Arial; background: #f4f7f6; display: flex; justify-content: center; padding: 20px; }
+					.card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 400px; }
+					input, select, textarea { width: 100%%; margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+					button { width: 100%%; background: #27ae60; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; }
+				</style>
+			</head>
+			<body>
+				<div class="card">
+					<h2>Запись пациента</h2>
+					<form action="/save" method="POST">
+						<label>Имя пациента</label>
+						<input type="text" name="name" required>
+						<label>Дата приема</label>
+						<input type="date" name="date" required>
+						<label>Врач</label>
+						<select name="doctor">
+							<option>Терапевт</option>
+							<option>Хирург</option>
+						</select>
+						<button type="submit">Записать</button>
+					</form>
+				</div>
+			</body>
+			</html>
+		`)
 	})
 
-	// 3. Запуск сервера (обязательно через переменную PORT для Render)
+	// 3. Запуск сервера
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
-	log.Printf("Server is starting on port %s...", port)
-	err := http.ListenAndServe(":"+port, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Printf("Server starting on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
