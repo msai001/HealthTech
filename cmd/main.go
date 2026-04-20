@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
+// Глобальная переменная для конфига
 var googleOAuthConfig = &oauth2.Config{
 	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
@@ -20,34 +21,46 @@ var googleOAuthConfig = &oauth2.Config{
 }
 
 func main() {
-	// Главная страница с кнопкой
+	// 1. Главная страница
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
 		fmt.Fprintf(w, `<html><body style="text-align:center;padding:50px;font-family:Arial;">
 			<h1>HealthTech</h1>
-			<a href="%s" style="background:#4285F4;color:white;padding:15px;text-decoration:none;border-radius:5px;">Войти через Google</a>
+			<a href="%s" style="background:#4285F4;color:white;padding:15px;text-decoration:none;border-radius:5px;font-weight:bold;">Войти через Google</a>
 		</body></html>`, url)
 	})
 
-	// Обработчик после нажатия "Продолжить"
+	// 2. Обработчик Callback
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
-
-		// Используем переменную token, чтобы Go не ругался
-		token, err := googleOAuthConfig.Exchange(context.Background(), code)
-		if err != nil {
-			http.Error(w, "Ошибка авторизации", http.StatusInternalServerError)
+		if code == "" {
+			http.Error(w, "No code in request", http.StatusBadRequest)
 			return
 		}
 
-		// Выводим сообщение, используя токен (теперь он "использован")
-		log.Printf("Авторизация успешна. Токен получен.")
-		fmt.Fprintf(w, "<h1>Успех!</h1><p>Вы вошли в систему. Токен: %s</p>", token.AccessToken[:10]+"...")
+		// Обмениваем код на токен
+		token, err := googleOAuthConfig.Exchange(context.Background(), code)
+		if err != nil {
+			log.Printf("Token exchange error: %v", err)
+			http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
+			return
+		}
+
+		// Используем токен, чтобы Go не ругался (UnusedVar)
+		log.Printf("Token received! Type: %s", token.TokenType)
+
+		fmt.Fprintf(w, "<h1>Успешный вход!</h1><p>Вы успешно авторизованы в HealthTech.</p>")
 	})
 
+	// 3. Запуск сервера (обязательно через переменную PORT для Render)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+
+	log.Printf("Server is starting on port %s...", port)
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
