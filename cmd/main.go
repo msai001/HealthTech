@@ -1,9 +1,8 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"health-app/internal/repository"
-	"health-app/internal/service"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// Конфигурация объявлена глобально, чтобы быть доступной в хендлерах
 var googleOAuthConfig = &oauth2.Config{
 	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
@@ -22,46 +20,34 @@ var googleOAuthConfig = &oauth2.Config{
 }
 
 func main() {
-	// Подключение к базе данных
-	connStr := "host=127.0.0.1 port=5432 user=postgres password=atyrau2026 dbname=postgres sslmode=disable"
-
-	repo, err := repository.NewPostgresRepo(connStr)
-	if err != nil {
-		log.Printf("Предупреждение: не удалось подключиться к БД: %v", err)
-		// На этапе тестов можно не выходить через log.Fatal, если БД на Render настроена иначе
-	}
-	_ = service.NewHealthService(repo) // инициализация сервиса
-
-	// Хендлер главной страницы
+	// Главная страница с кнопкой
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
-
-		fmt.Fprintf(w, `
-			<html>
-				<head><title>HealthTech</title></head>
-				<body style="font-family: Arial, sans-serif; text-align: center; padding-top: 50px;">
-					<h1>HealthTech System</h1>
-					<div style="margin-bottom: 30px;">
-						<a href="%s" style="background: #4285F4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">
-							Войти через Google
-						</a>
-					</div>
-					<hr>
-					<p>Добро пожаловать в систему записи пациентов</p>
-				</body>
-			</html>
-		`, url)
+		fmt.Fprintf(w, `<html><body style="text-align:center;padding:50px;font-family:Arial;">
+			<h1>HealthTech</h1>
+			<a href="%s" style="background:#4285F4;color:white;padding:15px;text-decoration:none;border-radius:5px;">Войти через Google</a>
+		</body></html>`, url)
 	})
 
-	// Здесь должны быть ваши остальные хендлеры, например для /callback
-	// http.HandleFunc("/callback", yourCallbackHandler)
+	// Обработчик после нажатия "Продолжить"
+	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
 
-	// Запуск сервера
+		// Используем переменную token, чтобы Go не ругался
+		token, err := googleOAuthConfig.Exchange(context.Background(), code)
+		if err != nil {
+			http.Error(w, "Ошибка авторизации", http.StatusInternalServerError)
+			return
+		}
+
+		// Выводим сообщение, используя токен (теперь он "использован")
+		log.Printf("Авторизация успешна. Токен получен.")
+		fmt.Fprintf(w, "<h1>Успех!</h1><p>Вы вошли в систему. Токен: %s</p>", token.AccessToken[:10]+"...")
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
-	log.Printf("Server starting on :%s...", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
