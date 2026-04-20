@@ -11,6 +11,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/pquerna/otp/totp" // Прямое использование библиотеки
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -27,26 +28,17 @@ var db *sql.DB
 
 const sharedStyles = `
 	<style>
-		:root { --primary: #10b981; --primary-hover: #059669; --danger: #ef4444; --bg: #f8fafc; --text: #1e293b; }
+		:root { --primary: #10b981; --primary-hover: #059669; --bg: #f8fafc; --text: #1e293b; }
 		* { box-sizing: border-box; margin: 0; padding: 0; }
-		body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); }
-		.container { max-width: 900px; margin: 40px auto; padding: 0 20px; }
-		.card { background: white; padding: 30px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.03); margin-bottom: 25px; border: 1px solid #e2e8f0; }
-		h1 { font-size: 24px; font-weight: 800; color: #0f172a; margin-bottom: 20px; }
-		.user-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-		.email-badge { background: #dcfce7; color: #166534; padding: 5px 15px; border-radius: 50px; font-size: 13px; font-weight: 600; }
-		.btn { cursor: pointer; border: none; border-radius: 10px; font-weight: 700; transition: all 0.2s; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
-		.btn-primary { background: var(--primary); color: white; width: 100%; padding: 14px; font-size: 16px; }
-		.btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
-		.btn-delete { background: #fee2e2; color: var(--danger); padding: 8px; font-size: 12px; border-radius: 8px; }
-		.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-		.form-group { text-align: left; margin-bottom: 15px; }
-		label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: #64748b; }
-		input, select { width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 15px; outline: none; }
-		table { width: 100%; border-collapse: collapse; }
-		th { text-align: left; padding: 12px; font-size: 12px; color: #94a3b8; text-transform: uppercase; border-bottom: 2px solid #f1f5f9; }
-		td { padding: 16px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
-		.doctor-tag { background: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+		body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+		.card { background: white; padding: 40px; border-radius: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; text-align: center; width: 100%; max-width: 450px; }
+		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; transition: all 0.2s; text-decoration: none; display: inline-block; padding: 14px; background: var(--primary); color: white; width: 100%; font-size: 16px; margin-top: 15px; }
+		.btn:hover { background: var(--primary-hover); transform: translateY(-1px); }
+		input { width: 100%; padding: 14px; border: 2px solid #f1f5f9; border-radius: 12px; font-size: 20px; text-align: center; outline: none; margin-top: 15px; }
+		.qr-box { background: #f9fafb; padding: 15px; border-radius: 16px; margin: 20px 0; border: 1px dashed #cbd5e1; }
+		.container { width: 100%; max-width: 900px; padding: 20px; align-self: flex-start; }
+		table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+		th, td { padding: 12px; text-align: left; border-bottom: 1px solid #f1f5f9; }
 	</style>
 `
 
@@ -62,8 +54,8 @@ func initDB() {
 	}
 }
 
-func getEmailFromCookie(r *http.Request) string {
-	cookie, err := r.Cookie("user_session")
+func getCookie(r *http.Request, name string) string {
+	cookie, err := r.Cookie(name)
 	if err != nil {
 		return ""
 	}
@@ -73,27 +65,24 @@ func getEmailFromCookie(r *http.Request) string {
 func main() {
 	initDB()
 
+	// 1. Главная
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if email := getEmailFromCookie(r); email != "" {
-			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		if email := getCookie(r, "user_session"); email != "" {
+			http.Redirect(w, r, "/dashboard", 302)
 			return
 		}
-
-		// Добавлен параметр prompt=select_account, чтобы Google всегда спрашивал выбор аккаунта
 		url := googleOAuthConfig.AuthCodeURL("state", oauth2.SetAuthURLParam("prompt", "select_account"))
-
 		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
-			<div class="container" style="text-align:center; margin-top: 100px;">
-				<div class="card">
-					<div style="font-size:48px;">🌿</div>
-					<h1>HealthTech Pro</h1>
-					<p style="color:#64748b; margin-bottom:30px;">Система управления медицинскими записями</p>
-					<a href="%s" class="btn btn-primary">Войти через Google</a>
-				</div>
+			<div class="card">
+				<div style="font-size:50px;">🌿</div>
+				<h1>HealthTech Pro</h1>
+				<p style="color:#64748b;">Вход с OTP защитой</p>
+				<a href="%s" class="btn">Войти через Google</a>
 			</div>
 		</body></html>`, sharedStyles, url)
 	})
 
+	// 2. Callback Google
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
@@ -108,107 +97,133 @@ func main() {
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
 		http.SetCookie(w, &http.Cookie{
-			Name:     "user_session",
-			Value:    userInfo.Email,
-			Path:     "/",
-			Expires:  time.Now().Add(30 * 24 * time.Hour),
-			HttpOnly: true,
+			Name: "otp_pending", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(5 * time.Minute), HttpOnly: true,
 		})
-
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		http.Redirect(w, r, "/otp-verify", 302)
 	})
 
-	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		email := getEmailFromCookie(r)
+	// 3. Страница OTP (Генерация QR через TOTP)
+	http.HandleFunc("/otp-verify", func(w http.ResponseWriter, r *http.Request) {
+		email := getCookie(r, "otp_pending")
 		if email == "" {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			http.Redirect(w, r, "/", 302)
 			return
 		}
 
-		rows, _ := db.Query("SELECT id, patient_name, appointment_date, doctor_name FROM appointments WHERE user_email = $1 ORDER BY id DESC", email)
+		var secret string
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
+
+		if secret == "" {
+			// Генерируем новый секрет
+			key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
+			secret = key.Secret()
+			db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'System', '2026-01-01', 'Admin')", email, secret)
+
+			qrUrl := fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=otpauth://totp/HealthTech:%s?secret=%s&issuer=HealthTech", email, secret)
+
+			fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
+				<div class="card">
+					<h1>Защита аккаунта</h1>
+					<p>Отсканируйте код в приложении:</p>
+					<div class="qr-box"><img src="%s"></div>
+					<form action="/otp-check" method="POST">
+						<input type="text" name="code" placeholder="000000" maxlength="6" required autofocus>
+						<button type="submit" class="btn">Активировать</button>
+					</form>
+				</div>
+			</body></html>`, sharedStyles, qrUrl)
+			return
+		}
+
+		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
+			<div class="card">
+				<h1>OTP Проверка</h1>
+				<p>Введите код из телефона:</p>
+				<form action="/otp-check" method="POST">
+					<input type="text" name="code" placeholder="000000" maxlength="6" required autofocus>
+					<button type="submit" class="btn">Войти</button>
+				</form>
+			</div>
+		</body></html>`, sharedStyles)
+	})
+
+	// 4. Проверка OTP через TOTP Validate
+	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
+		email := getCookie(r, "otp_pending")
+		userCode := r.FormValue("code")
+
+		var secret string
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
+
+		// ПРЯМОЕ ИСПОЛЬЗОВАНИЕ TOTP
+		if totp.Validate(userCode, secret) {
+			http.SetCookie(w, &http.Cookie{
+				Name: "user_session", Value: email, Path: "/", Expires: time.Now().Add(30 * 24 * time.Hour), HttpOnly: true,
+			})
+			http.Redirect(w, r, "/dashboard", 302)
+		} else {
+			fmt.Fprintf(w, `<script>alert("Неверный код!"); window.history.back();</script>`)
+		}
+	})
+
+	// 5. Дашборд
+	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		email := getCookie(r, "user_session")
+		if email == "" {
+			http.Redirect(w, r, "/", 302)
+			return
+		}
+
+		rows, _ := db.Query("SELECT id, patient_name, appointment_date, doctor_name FROM appointments WHERE user_email = $1 AND patient_name != 'System' ORDER BY id DESC", email)
 		defer rows.Close()
 
-		var rowsHtml string
+		var tableHtml string
 		for rows.Next() {
 			var id int
 			var pName, pDate, pDoc string
 			rows.Scan(&id, &pName, &pDate, &pDoc)
-			rowsHtml += fmt.Sprintf(`
-				<tr>
-					<td><b>%s</b></td>
-					<td>%s</td>
-					<td><span class="doctor-tag">%s</span></td>
-					<td style="text-align:right;">
-						<a href="/delete?id=%d" class="btn btn-delete" onclick="return confirm('Удалить запись?')">🗑️</a>
-					</td>
-				</tr>`, pName, pDate, pDoc, id)
+			tableHtml += fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%s</td><td><a href="/delete?id=%d">🗑️</a></td></tr>`, pName, pDate, pDoc, id)
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
-			<div class="container">
-				<div class="user-nav">
-					<span style="font-weight:800; font-size:20px;">🌿 HealthTech</span>
-					<div>
-						<span class="email-badge">%s</span>
-						<a href="/logout" style="font-size:12px; color:#ef4444; margin-left:10px; font-weight:bold; text-decoration:none;">Выйти</a>
-					</div>
+		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body style="display:block;"><div class="container">
+			<div class="card" style="max-width:100%%; text-align:left;">
+				<div style="display:flex; justify-content:space-between;">
+					<h2>🌿 Журнал: %s</h2>
+					<a href="/logout" style="color:red; text-decoration:none;">Выйти</a>
 				</div>
-				
-				<div class="card">
-					<h1>➕ Новая запись</h1>
-					<form action="/save" method="POST">
-						<div class="form-group"><label>ФИО Пациента</label><input type="text" name="patient_name" placeholder="Имя пациента" required></div>
-						<div class="form-grid">
-							<div class="form-group"><label>Дата</label><input type="date" name="date" required></div>
-							<div class="form-group">
-								<label>Специалист</label>
-								<select name="doctor">
-									<option>Терапевт</option><option>Кардиолог</option><option>Стоматолог</option>
-								</select>
-							</div>
-						</div>
-						<button type="submit" class="btn btn-primary">Добавить запись</button>
-					</form>
-				</div>
-
-				<div class="card">
-					<h1>📅 Список приемов</h1>
-					<table>
-						<thead><tr><th>Пациент</th><th>Дата</th><th>Врач</th><th></th></tr></thead>
-						<tbody>%s</tbody>
-					</table>
-				</div>
+				<form action="/save" method="POST" style="margin-top:20px; display:grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap:10px;">
+					<input type="text" name="name" placeholder="Пациент" required style="margin:0; text-align:left;">
+					<input type="date" name="date" required style="margin:0;">
+					<select name="doc" style="padding:12px; border-radius:12px; border:2px solid #f1f5f9;"><option>Терапевт</option><option>Кардиолог</option></select>
+					<button type="submit" class="btn" style="margin:0;">OK</button>
+				</form>
+				<table><thead><tr><th>Имя</th><th>Дата</th><th>Врач</th><th></th></tr></thead><tbody>%s</tbody></table>
 			</div>
-		</body></html>`, sharedStyles, email, rowsHtml)
+		</div></body></html>`, sharedStyles, email, tableHtml)
 	})
 
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
-		email := getEmailFromCookie(r)
-		if r.Method == http.MethodPost && email != "" {
+		email := getCookie(r, "user_session")
+		if email != "" {
 			db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
-				r.FormValue("patient_name"), r.FormValue("date"), r.FormValue("doctor"), email)
+				r.FormValue("name"), r.FormValue("date"), r.FormValue("doc"), email)
 		}
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard", 302)
 	})
 
 	http.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
-		email := getEmailFromCookie(r)
+		email := getCookie(r, "user_session")
 		id := r.URL.Query().Get("id")
-		if email != "" && id != "" {
+		if email != "" {
 			db.Exec("DELETE FROM appointments WHERE id = $1 AND user_email = $2", id, email)
 		}
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		http.Redirect(w, r, "/dashboard", 302)
 	})
 
 	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{
-			Name:   "user_session",
-			Value:  "",
-			Path:   "/",
-			MaxAge: -1,
-		})
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.SetCookie(w, &http.Cookie{Name: "user_session", Value: "", Path: "/", MaxAge: -1})
+		http.Redirect(w, r, "/", 302)
 	})
 
 	port := os.Getenv("PORT")
