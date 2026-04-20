@@ -40,13 +40,23 @@ const sharedStyles = `
 `
 
 func initDB() {
-	var err error
 	connStr := os.Getenv("DATABASE_URL")
+	var err error
+
+	// Пробуем подключиться
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Ошибка конфигурации БД:", err)
 	}
 
+	// Проверяем жива ли база
+	err = db.Ping()
+	if err != nil {
+		log.Printf("База не отвечает, пробуем SSL режим...")
+		db, _ = sql.Open("postgres", connStr+"?sslmode=require")
+	}
+
+	// Создаем таблицу если её нет
 	query := `
 	CREATE TABLE IF NOT EXISTS appointments (
 		id SERIAL PRIMARY KEY,
@@ -57,7 +67,7 @@ func initDB() {
 	);`
 	_, err = db.Exec(query)
 	if err != nil {
-		log.Printf("Ошибка миграции: %v", err)
+		log.Printf("Ошибка при создании таблицы: %v", err)
 	}
 }
 
@@ -80,7 +90,7 @@ func main() {
 		code := r.URL.Query().Get("code")
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
 		if err != nil {
-			http.Error(w, "Auth error", 500)
+			http.Error(w, "Ошибка авторизации", 500)
 			return
 		}
 
@@ -95,11 +105,11 @@ func main() {
 				<div class="user-badge">👤 %s</div>
 				<h1>Новая запись</h1>
 				<form action="/save" method="POST">
-					<input type="hidden" name="email" value="%s">
-					<div class="form-group"><label>ФИО пациента</label><input type="text" name="name" required></div>
+					<input type="hidden" name="user_email" value="%s">
+					<div class="form-group"><label>ФИО пациента</label><input type="text" name="patient_name" required></div>
 					<div class="form-group"><label>Дата</label><input type="date" name="date" required></div>
 					<div class="form-group"><label>Врач</label>
-						<select name="doctor"><option>Терапевт</option><option>Хирург</option></select>
+						<select name="doctor"><option>Терапевт</option><option>Хирург</option><option>Кардиолог</option></select>
 					</div>
 					<button type="submit" class="btn">Сохранить в базу</button>
 				</form>
@@ -108,30 +118,39 @@ func main() {
 	})
 
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			name := r.FormValue("name")
-			date := r.FormValue("date")
-			doctor := r.FormValue("doctor")
-			email := r.FormValue("email")
-
-			_, err := db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
-				name, date, doctor, email)
-
-			if err != nil {
-				log.Printf("DB Error: %v", err)
-				http.Error(w, "Ошибка сохранения", 500)
-				return
-			}
-
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, `<html><head>%s</head><body>
-				<div class="container"><div class="card">
-					<h1 style="color:#27ae60;">✅ Сохранено</h1>
-					<p>Пациент %s добавлен в базу.</p>
-					<a href="/" class="btn" style="background:#64748b;">На главную</a>
-				</div></div>
-			</body></html>`, sharedStyles, name)
+		if r.Method != http.MethodPost {
+			http.Redirect(w, r, "/", 302)
+			return
 		}
+
+		pName := r.FormValue("patient_name")
+		pDate := r.FormValue("date")
+		pDoc := r.FormValue("doctor")
+		uEmail := r.FormValue("user_email")
+
+		// Если email пустой, ставим заглушку
+		if uEmail == "" {
+			uEmail = "anonymous@healthtech.com"
+		}
+
+		_, err := db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
+			pName, pDate, pDoc, uEmail)
+
+		if err != nil {
+			log.Printf("КРИТИЧЕСКАЯ ОШИБКА БД: %v", err)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintf(w, "ОШИБКА СОХРАНЕНИЯ В БАЗУ:\n\n%v\n\nПроверь логи Render для деталей.", err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<html><head>%s</head><body>
+			<div class="container"><div class="card">
+				<h1 style="color:#27ae60;">✅ Успешно!</h1>
+				<p>Пациент <b>%s</b> записан в базу.</p>
+				<a href="/" class="btn" style="background:#64748b;">На главную</a>
+			</div></div>
+		</body></html>`, sharedStyles, pName)
 	})
 
 	port := os.Getenv("PORT")
