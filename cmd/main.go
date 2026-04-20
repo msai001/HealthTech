@@ -38,11 +38,11 @@ const sharedStyles = `
 		.btn { cursor: pointer; border: none; border-radius: 10px; font-weight: 700; transition: all 0.2s; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 		.btn-primary { background: var(--primary); color: white; width: 100%; padding: 14px; font-size: 16px; }
 		.btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
-		.btn-delete { background: #fee2e2; color: var(--danger); padding: 8px; font-size: 12px; }
+		.btn-delete { background: #fee2e2; color: var(--danger); padding: 8px; font-size: 12px; border-radius: 8px; }
 		.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
 		.form-group { text-align: left; margin-bottom: 15px; }
 		label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: #64748b; }
-		input, select { width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 15px; }
+		input, select { width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 15px; outline: none; }
 		table { width: 100%; border-collapse: collapse; }
 		th { text-align: left; padding: 12px; font-size: 12px; color: #94a3b8; text-transform: uppercase; border-bottom: 2px solid #f1f5f9; }
 		td { padding: 16px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
@@ -62,7 +62,6 @@ func initDB() {
 	}
 }
 
-// Функция для получения email из куки
 func getEmailFromCookie(r *http.Request) string {
 	cookie, err := r.Cookie("user_session")
 	if err != nil {
@@ -74,28 +73,27 @@ func getEmailFromCookie(r *http.Request) string {
 func main() {
 	initDB()
 
-	// Главная страница
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Если кука уже есть, сразу кидаем в кабинет
 		if email := getEmailFromCookie(r); email != "" {
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 			return
 		}
 
-		url := googleOAuthConfig.AuthCodeURL("state")
+		// Добавлен параметр prompt=select_account, чтобы Google всегда спрашивал выбор аккаунта
+		url := googleOAuthConfig.AuthCodeURL("state", oauth2.SetAuthURLParam("prompt", "select_account"))
+
 		fmt.Fprintf(w, `<html><head><meta charset="UTF-8">%s</head><body>
 			<div class="container" style="text-align:center; margin-top: 100px;">
 				<div class="card">
 					<div style="font-size:48px;">🌿</div>
 					<h1>HealthTech Pro</h1>
-					<p style="color:#64748b; margin-bottom:30px;">Профессиональное управление записями</p>
+					<p style="color:#64748b; margin-bottom:30px;">Система управления медицинскими записями</p>
 					<a href="%s" class="btn btn-primary">Войти через Google</a>
 				</div>
 			</div>
 		</body></html>`, sharedStyles, url)
 	})
 
-	// Callback после входа
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
@@ -109,7 +107,6 @@ func main() {
 		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
-		// СОХРАНЯЕМ ТОКЕН (Email) в КУКИ на 30 дней
 		http.SetCookie(w, &http.Cookie{
 			Name:     "user_session",
 			Value:    userInfo.Email,
@@ -121,7 +118,6 @@ func main() {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	})
 
-	// Личный кабинет
 	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		email := getEmailFromCookie(r)
 		if email == "" {
@@ -143,7 +139,7 @@ func main() {
 					<td>%s</td>
 					<td><span class="doctor-tag">%s</span></td>
 					<td style="text-align:right;">
-						<a href="/delete?id=%d" class="btn btn-delete">🗑️</a>
+						<a href="/delete?id=%d" class="btn btn-delete" onclick="return confirm('Удалить запись?')">🗑️</a>
 					</td>
 				</tr>`, pName, pDate, pDoc, id)
 		}
@@ -155,36 +151,29 @@ func main() {
 					<span style="font-weight:800; font-size:20px;">🌿 HealthTech</span>
 					<div>
 						<span class="email-badge">%s</span>
-						<a href="/logout" style="font-size:12px; color:gray; margin-left:10px;">Выйти</a>
+						<a href="/logout" style="font-size:12px; color:#ef4444; margin-left:10px; font-weight:bold; text-decoration:none;">Выйти</a>
 					</div>
 				</div>
 				
 				<div class="card">
 					<h1>➕ Новая запись</h1>
 					<form action="/save" method="POST">
-						<div class="form-group">
-							<label>ФИО Пациента</label>
-							<input type="text" name="patient_name" placeholder="Введите имя" required>
-						</div>
+						<div class="form-group"><label>ФИО Пациента</label><input type="text" name="patient_name" placeholder="Имя пациента" required></div>
 						<div class="form-grid">
+							<div class="form-group"><label>Дата</label><input type="date" name="date" required></div>
 							<div class="form-group">
-								<label>Дата</label>
-								<input type="date" name="date" required>
-							</div>
-							<div class="form-group">
-								<label>Врач</label>
+								<label>Специалист</label>
 								<select name="doctor">
-									<option>Терапевт</option><option>Кардиолог</option>
-									<option>Стоматолог</option><option>Невролог</option>
+									<option>Терапевт</option><option>Кардиолог</option><option>Стоматолог</option>
 								</select>
 							</div>
 						</div>
-						<button type="submit" class="btn btn-primary">Записать</button>
+						<button type="submit" class="btn btn-primary">Добавить запись</button>
 					</form>
 				</div>
 
 				<div class="card">
-					<h1>📅 Журнал записей</h1>
+					<h1>📅 Список приемов</h1>
 					<table>
 						<thead><tr><th>Пациент</th><th>Дата</th><th>Врач</th><th></th></tr></thead>
 						<tbody>%s</tbody>
@@ -194,7 +183,6 @@ func main() {
 		</body></html>`, sharedStyles, email, rowsHtml)
 	})
 
-	// Сохранение
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
 		email := getEmailFromCookie(r)
 		if r.Method == http.MethodPost && email != "" {
@@ -204,7 +192,6 @@ func main() {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	})
 
-	// Удаление
 	http.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
 		email := getEmailFromCookie(r)
 		id := r.URL.Query().Get("id")
@@ -214,7 +201,6 @@ func main() {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	})
 
-	// Выход
 	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{
 			Name:   "user_session",
