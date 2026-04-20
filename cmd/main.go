@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 
+	_ "github.com/lib/pq"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -20,31 +22,55 @@ var googleOAuthConfig = &oauth2.Config{
 	Endpoint:     google.Endpoint,
 }
 
+var db *sql.DB
+
 const sharedStyles = `
 	<style>
 		* { box-sizing: border-box; margin: 0; padding: 0; }
 		body { font-family: 'Inter', sans-serif; background: #f0f4f8; color: #333; }
 		.container { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 		.card { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); width: 100%%; max-width: 450px; text-align: center; }
-		.user-badge { background: #e2e8f0; padding: 8px 12px; border-radius: 20px; display: inline-block; font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 20px; }
-		h1 { color: #1a365d; margin-bottom: 10px; font-size: 28px; }
-		p { color: #64748b; margin-bottom: 30px; }
-		.btn { display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; width: 100%%; transition: 0.2s; }
-		.btn:hover { background: #2563eb; }
-		.form-group { text-align: left; margin-bottom: 20px; }
-		label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-		input, select { width: 100%%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 16px; }
+		.user-badge { background: #e2e8f0; padding: 8px 12px; border-radius: 20px; display: inline-block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 20px; }
+		h1 { color: #1a365d; margin-bottom: 10px; font-size: 24px; }
+		.btn { display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; width: 100%%; margin-top: 10px; }
+		.form-group { text-align: left; margin-bottom: 15px; }
+		label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 5px; }
+		input, select { width: 100%%; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; }
 	</style>
 `
 
+func initDB() {
+	var err error
+	connStr := os.Getenv("DATABASE_URL")
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	query := `
+	CREATE TABLE IF NOT EXISTS appointments (
+		id SERIAL PRIMARY KEY,
+		patient_name TEXT NOT NULL,
+		appointment_date TEXT NOT NULL,
+		doctor_name TEXT NOT NULL,
+		user_email TEXT NOT NULL
+	);`
+	_, err = db.Exec(query)
+	if err != nil {
+		log.Printf("Ошибка миграции: %v", err)
+	}
+}
+
 func main() {
+	initDB()
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<html><head>%s</head><body>
 			<div class="container"><div class="card">
 				<h1>HealthTech</h1>
-				<p>Войдите в систему для записи пациентов.</p>
+				<p>Система записи пациентов</p>
 				<a href="%s" class="btn">Войти через Google</a>
 			</div></div>
 		</body></html>`, sharedStyles, url)
@@ -52,62 +78,60 @@ func main() {
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
-		if code == "" {
-			http.Error(w, "Код не получен", http.StatusBadRequest)
-			return
-		}
-
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
 		if err != nil {
-			http.Error(w, "Ошибка токена", http.StatusInternalServerError)
+			http.Error(w, "Auth error", 500)
 			return
 		}
 
-		// ШАГ 2: Получаем данные пользователя из Google
 		client := googleOAuthConfig.Client(context.Background(), token)
-		resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-		if err != nil {
-			http.Error(w, "Ошибка получения данных", http.StatusInternalServerError)
-			return
-		}
-		defer resp.Body.Close()
-
-		var userInfo struct {
-			Email string `json:"email"`
-		}
+		resp, _ := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<html><head>%s</head><body>
 			<div class="container"><div class="card">
 				<div class="user-badge">👤 %s</div>
-				<h1>Запись на прием</h1>
+				<h1>Новая запись</h1>
 				<form action="/save" method="POST">
+					<input type="hidden" name="email" value="%s">
 					<div class="form-group"><label>ФИО пациента</label><input type="text" name="name" required></div>
 					<div class="form-group"><label>Дата</label><input type="date" name="date" required></div>
-					<div class="form-group"><label>Специалист</label>
-						<select name="doctor"><option>Терапевт</option><option>Хирург</option><option>Кардиолог</option></select>
+					<div class="form-group"><label>Врач</label>
+						<select name="doctor"><option>Терапевт</option><option>Хирург</option></select>
 					</div>
-					<button type="submit" class="btn">Записать</button>
+					<button type="submit" class="btn">Сохранить в базу</button>
 				</form>
 			</div></div>
-		</body></html>`, sharedStyles, userInfo.Email)
+		</body></html>`, sharedStyles, userInfo.Email, userInfo.Email)
 	})
 
 	http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
+		if r.Method == http.MethodPost {
+			name := r.FormValue("name")
+			date := r.FormValue("date")
+			doctor := r.FormValue("doctor")
+			email := r.FormValue("email")
+
+			_, err := db.Exec("INSERT INTO appointments (patient_name, appointment_date, doctor_name, user_email) VALUES ($1, $2, $3, $4)",
+				name, date, doctor, email)
+
+			if err != nil {
+				log.Printf("DB Error: %v", err)
+				http.Error(w, "Ошибка сохранения", 500)
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<html><head>%s</head><body>
+				<div class="container"><div class="card">
+					<h1 style="color:#27ae60;">✅ Сохранено</h1>
+					<p>Пациент %s добавлен в базу.</p>
+					<a href="/" class="btn" style="background:#64748b;">На главную</a>
+				</div></div>
+			</body></html>`, sharedStyles, name)
 		}
-		name := r.FormValue("name")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><head>%s</head><body>
-			<div class="container"><div class="card">
-				<h1 style="color:#27ae60;">✅ Успешно</h1>
-				<p>Пациент <strong>%s</strong> добавлен в очередь.</p>
-				<a href="/" class="btn" style="background:#64748b;">На главную</a>
-			</div></div>
-		</body></html>`, sharedStyles, name)
 	})
 
 	port := os.Getenv("PORT")
