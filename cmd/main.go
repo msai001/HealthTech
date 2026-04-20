@@ -38,7 +38,7 @@ const sharedStyles = `
 		body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
 		.card { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 450px; }
 		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: var(--primary); color: white; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; }
-		.otp-input { font-size: 28px; letter-spacing: 8px; text-align: center; width: 80%; margin-top: 20px; border: 2px solid #e2e8f0; border-radius: 12px; padding: 10px; }
+		.otp-input { font-size: 28px; letter-spacing: 8px; text-align: center; width: 80%; margin-top: 20px; border: 2px solid #e2e8f0; border-radius: 12px; padding: 10px; outline: none; }
 	</style>
 `
 
@@ -57,20 +57,16 @@ func initDB() {
 func sendEmailOTP(toEmail, code string) {
 	from := os.Getenv("EMAIL_USER")
 	pass := os.Getenv("EMAIL_PASS")
-
 	if from == "" || pass == "" {
-		log.Println("ОШИБКА: Переменные EMAIL_USER или EMAIL_PASS все еще не видны коду!")
 		return
 	}
 
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
-	msg := fmt.Sprintf("From: %s\nTo: %s\nSubject: HealthTech Security Code\n\nYour code is: %s", from, toEmail, code)
+	msg := fmt.Sprintf("From: %s\nTo: %s\nSubject: HealthTech Security Code\n\nYour verification code: %s\n\nThis code is valid for 2 minutes.", from, toEmail, code)
 
 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
 	if err != nil {
-		log.Printf("Ошибка SMTP: %v", err)
-	} else {
-		log.Printf("УСПЕХ: Код отправлен на %s", toEmail)
+		log.Printf("Email error: %v", err)
 	}
 }
 
@@ -90,8 +86,7 @@ func main() {
 		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
-		cookie := &http.Cookie{Name: "otp_pending", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(15 * time.Minute)}
-		http.SetCookie(w, cookie)
+		http.SetCookie(w, &http.Cookie{Name: "otp_pending", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(15 * time.Minute)})
 		http.Redirect(w, r, "/otp-verify", 302)
 	})
 
@@ -104,7 +99,9 @@ func main() {
 		email := cookie.Value
 
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
+		// Берем самый свежий секрет из базы
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' ORDER BY id DESC LIMIT 1", email).Scan(&secret)
+
 		if secret == "" {
 			key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
 			secret = key.Secret()
@@ -114,23 +111,26 @@ func main() {
 		currentCode, _ := totp.GenerateCode(secret, time.Now())
 		go sendEmailOTP(email, currentCode)
 
-		qrUrl := fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=otpauth://totp/HealthTech:%s?secret=%s&issuer=HealthTech", email, secret)
-
-		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h2>Введите код</h2><img src=\"%s\" style=\"margin:20px 0;\"><p>Код отправлен на почту</p><form action=\"/otp-check\" method=\"POST\"><input type=\"text\" name=\"code\" class=\"otp-input\" maxlength=\"6\" required autofocus><button type=\"submit\" class=\"btn\">Подтвердить</button></form></div></body></html>", sharedStyles, qrUrl)
+		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h2>Введите код</h2><p>Мы отправили его на %s</p><form action=\"/otp-check\" method=\"POST\"><input type=\"text\" name=\"code\" class=\"otp-input\" placeholder=\"000000\" maxlength=\"6\" required autofocus><button type=\"submit\" class=\"btn\">Подтвердить</button></form></div></body></html>", sharedStyles, email)
 	})
 
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("otp_pending")
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", cookie.Value).Scan(&secret)
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' ORDER BY id DESC LIMIT 1", cookie.Value).Scan(&secret)
 
-		// Исправлено: принимаем два значения
-		valid, _ := totp.ValidateCustom(r.FormValue("code"), secret, time.Now(), totp.ValidateOpts{Skew: 1})
+		// Skew: 2 означает, что мы проверяем код в диапазоне +/- 1 минута от текущего времени
+		valid, _ := totp.ValidateCustom(r.FormValue("code"), secret, time.Now(), totp.ValidateOpts{
+			Skew:      2,
+			Digits:    6,
+			Period:    30,
+			Algorithm: 0, // SHA1
+		})
 
 		if valid {
-			fmt.Fprintf(w, "<html><body><h1>Успешный вход!</h1></body></html>")
+			fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h1>✅ Успех!</h1><p>Вы вошли в систему.</p></div></body></html>", sharedStyles)
 		} else {
-			fmt.Fprintf(w, "<script>alert('Неверный код'); window.history.back();</script>")
+			fmt.Fprintf(w, "<script>alert('Код не подошел. Попробуйте еще раз или обновите страницу.'); window.history.back();</script>")
 		}
 	})
 
