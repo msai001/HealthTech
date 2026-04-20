@@ -31,6 +31,17 @@ var googleOAuthConfig = &oauth2.Config{
 
 var db *sql.DB
 
+const sharedStyles = `
+	<style>
+		@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
+		:root { --primary: #10b981; --bg: #f8fafc; }
+		body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+		.card { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 450px; }
+		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: var(--primary); color: white; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; transition: 0.3s; }
+		.otp-input { font-size: 32px; letter-spacing: 10px; text-align: center; width: 80%; margin-top: 20px; border: 2px solid #e2e8f0; border-radius: 12px; padding: 12px; outline: none; border-color: var(--primary); }
+	</style>
+`
+
 func initDB() {
 	connStr := os.Getenv("DATABASE_URL")
 	var err error
@@ -49,9 +60,14 @@ func sendEmailOTP(toEmail, code string) {
 	if from == "" || pass == "" {
 		return
 	}
+
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
-	msg := fmt.Sprintf("Subject: HealthTech Code\n\nYour code: %s", code)
-	smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
+	msg := fmt.Sprintf("From: %s\nTo: %s\nSubject: Security Code: %s\n\nYour HealthTech code is: %s\nValid for 2 minutes.", from, toEmail, code, code)
+
+	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
+	if err != nil {
+		log.Printf("SMTP Error: %v", err)
+	}
 }
 
 func main() {
@@ -59,17 +75,12 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state", oauth2.SetAuthURLParam("prompt", "select_account"))
-		fmt.Fprintf(w, "<html><body><h1>🌿 HealthTech</h1><a href='%s'>Войти через Google</a></body></html>", url)
+		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h1>🌿 HealthTech</h1><a href=\"%s\" class=\"btn\">Войти через Google</a></div></body></html>", sharedStyles, url)
 	})
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
-		token, err := googleOAuthConfig.Exchange(context.Background(), code)
-		if err != nil {
-			log.Printf("OAuth Error: %v", err)
-			http.Redirect(w, r, "/", 302)
-			return
-		}
+		token, _ := googleOAuthConfig.Exchange(context.Background(), code)
 		client := googleOAuthConfig.Client(context.Background(), token)
 		resp, _ := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 		var userInfo struct{ Email string }
@@ -80,15 +91,17 @@ func main() {
 	})
 
 	http.HandleFunc("/otp-verify", func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("otp_pending")
-		if err != nil {
+		cookie, _ := r.Cookie("otp_pending")
+		email := cookie.Value
+		if email == "" {
 			http.Redirect(w, r, "/", 302)
 			return
 		}
-		email := cookie.Value
 
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
+		// Берем ПОСЛЕДНИЙ созданный секрет
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 ORDER BY id DESC LIMIT 1", email).Scan(&secret)
+
 		if secret == "" {
 			key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
 			secret = key.Secret()
@@ -98,21 +111,27 @@ func main() {
 		currentCode, _ := totp.GenerateCode(secret, time.Now())
 		go sendEmailOTP(email, currentCode)
 
-		fmt.Fprintf(w, "<html><body><h2>Код отправлен на почту!</h2><form action='/otp-check' method='POST'><input type='text' name='code'><button type='submit'>Войти</button></form></body></html>")
+		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h2>Подтверждение</h2><p>Код отправлен на почту</p><form action=\"/otp-check\" method=\"POST\"><input type=\"text\" name=\"code\" class=\"otp-input\" placeholder=\"000000\" maxlength=\"6\" required autofocus><button type=\"submit\" class=\"btn\">Проверить</button></form></div></body></html>", sharedStyles)
 	})
 
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("otp_pending")
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", cookie.Value).Scan(&secret)
+		// Обязательно берем тот же последний секрет
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 ORDER BY id DESC LIMIT 1", cookie.Value).Scan(&secret)
 
-		// ИСПРАВЛЕНО: принимаем два значения (bool и error)
-		valid, _ := totp.ValidateCustom(r.FormValue("code"), secret, time.Now(), totp.ValidateOpts{Skew: 1})
+		// Skew: 4 — очень широкое окно (проверка кодов за последние 2 минуты)
+		valid, _ := totp.ValidateCustom(r.FormValue("code"), secret, time.Now(), totp.ValidateOpts{
+			Skew:      4,
+			Digits:    6,
+			Period:    30,
+			Algorithm: 0,
+		})
 
 		if valid {
-			fmt.Fprintf(w, "<h1>✅ Вы вошли!</h1>")
+			fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h1>✅ Доступ разрешен</h1><p>Вы успешно авторизованы.</p></div></body></html>", sharedStyles)
 		} else {
-			fmt.Fprintf(w, "<h1>❌ Неверный код</h1><a href='/otp-verify'>Попробовать еще раз</a>")
+			fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h1>❌ Ошибка</h1><p>Код неверный или устарел.</p><a href='/otp-verify' class='btn'>Попробовать еще раз</a></div></body></html>", sharedStyles)
 		}
 	})
 
