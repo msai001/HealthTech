@@ -21,8 +21,8 @@ var googleOAuthConfig = &oauth2.Config{
 	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 	RedirectURL:  "https://healthtech-1.onrender.com/callback",
-	// ИСПРАВЛЕННЫЕ SCOPES ЗДЕСЬ:
 	Scopes: []string{
+		"openid",
 		"https://www.googleapis.com/auth/userinfo.email",
 		"https://www.googleapis.com/auth/userinfo.profile",
 	},
@@ -36,7 +36,7 @@ const sharedStyles = `
 		@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
 		:root { --primary: #10b981; --bg: #f8fafc; }
 		body { font-family: 'Plus Jakarta Sans', sans-serif; background: var(--bg); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-		.card { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 480px; }
+		.card { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 450px; }
 		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: var(--primary); color: white; width: 100%; font-size: 16px; margin-top: 15px; text-decoration: none; display: inline-block; }
 		.otp-input { font-size: 28px; letter-spacing: 8px; text-align: center; width: 80%; margin-top: 20px; border: 2px solid #e2e8f0; border-radius: 12px; padding: 10px; }
 	</style>
@@ -57,8 +57,9 @@ func initDB() {
 func sendEmailOTP(toEmail, code string) {
 	from := os.Getenv("EMAIL_USER")
 	pass := os.Getenv("EMAIL_PASS")
+
 	if from == "" || pass == "" {
-		log.Println("Критическая ошибка: EMAIL_USER или EMAIL_PASS не настроены в Render")
+		log.Println("ОШИБКА: Переменные EMAIL_USER или EMAIL_PASS все еще не видны коду!")
 		return
 	}
 
@@ -67,18 +68,10 @@ func sendEmailOTP(toEmail, code string) {
 
 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
 	if err != nil {
-		log.Printf("Ошибка отправки почты: %v", err)
+		log.Printf("Ошибка SMTP: %v", err)
 	} else {
-		log.Printf("Код успешно отправлен на %s", toEmail)
+		log.Printf("УСПЕХ: Код отправлен на %s", toEmail)
 	}
-}
-
-func getCookie(r *http.Request, name string) string {
-	cookie, err := r.Cookie(name)
-	if err != nil {
-		return ""
-	}
-	return cookie.Value
 }
 
 func main() {
@@ -91,27 +84,24 @@ func main() {
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
-		token, err := googleOAuthConfig.Exchange(context.Background(), code)
-		if err != nil {
-			log.Printf("Ошибка обмена токена: %v", err)
-			http.Redirect(w, r, "/", 302)
-			return
-		}
+		token, _ := googleOAuthConfig.Exchange(context.Background(), code)
 		client := googleOAuthConfig.Client(context.Background(), token)
 		resp, _ := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
 
-		http.SetCookie(w, &http.Cookie{Name: "otp_pending", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(15 * time.Minute)})
+		cookie := &http.Cookie{Name: "otp_pending", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(15 * time.Minute)}
+		http.SetCookie(w, cookie)
 		http.Redirect(w, r, "/otp-verify", 302)
 	})
 
 	http.HandleFunc("/otp-verify", func(w http.ResponseWriter, r *http.Request) {
-		email := getCookie(r, "otp_pending")
-		if email == "" {
+		cookie, err := r.Cookie("otp_pending")
+		if err != nil {
 			http.Redirect(w, r, "/", 302)
 			return
 		}
+		email := cookie.Value
 
 		var secret string
 		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
@@ -126,31 +116,22 @@ func main() {
 
 		qrUrl := fmt.Sprintf("https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=otpauth://totp/HealthTech:%s?secret=%s&issuer=HealthTech", email, secret)
 
-		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h2>Проверка</h2><img src=\"%s\" style=\"margin:20px 0;\"><p>Код отправлен на %s</p><form action=\"/otp-check\" method=\"POST\"><input type=\"text\" name=\"code\" class=\"otp-input\" placeholder=\"000000\" maxlength=\"6\" required autofocus><button type=\"submit\" class=\"btn\">Войти</button></form></div></body></html>", sharedStyles, qrUrl, email)
+		fmt.Fprintf(w, "<html><head><meta charset=\"UTF-8\">%s</head><body><div class=\"card\"><h2>Введите код</h2><img src=\"%s\" style=\"margin:20px 0;\"><p>Код отправлен на почту</p><form action=\"/otp-check\" method=\"POST\"><input type=\"text\" name=\"code\" class=\"otp-input\" maxlength=\"6\" required autofocus><button type=\"submit\" class=\"btn\">Подтвердить</button></form></div></body></html>", sharedStyles, qrUrl)
 	})
 
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
-		email := getCookie(r, "otp_pending")
+		cookie, _ := r.Cookie("otp_pending")
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", email).Scan(&secret)
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' LIMIT 1", cookie.Value).Scan(&secret)
 
+		// Исправлено: принимаем два значения
 		valid, _ := totp.ValidateCustom(r.FormValue("code"), secret, time.Now(), totp.ValidateOpts{Skew: 1})
 
 		if valid {
-			http.SetCookie(w, &http.Cookie{Name: "user_session", Value: email, Path: "/", Expires: time.Now().Add(24 * time.Hour)})
-			http.Redirect(w, r, "/dashboard", 302)
+			fmt.Fprintf(w, "<html><body><h1>Успешный вход!</h1></body></html>")
 		} else {
-			fmt.Fprintf(w, "<script>alert(\"Ошибка!\"); window.history.back();</script>")
+			fmt.Fprintf(w, "<script>alert('Неверный код'); window.history.back();</script>")
 		}
-	})
-
-	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
-		email := getCookie(r, "user_session")
-		if email == "" {
-			http.Redirect(w, r, "/", 302)
-			return
-		}
-		fmt.Fprintf(w, "<html><body><h1>Добро пожаловать, %s</h1></body></html>", email)
 	})
 
 	port := os.Getenv("PORT")
