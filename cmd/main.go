@@ -45,6 +45,33 @@ func main() {
 		}
 
 		log.Printf("Авторизация успешна для токена: %s", token.TokenType)
+		// 3. Обработчик сохранения (сработает при нажатии "Записать")
+		http.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
+
+			// Получаем данные из формы
+			name := r.FormValue("name")
+			date := r.FormValue("date")
+			doctor := r.FormValue("doctor")
+
+			// Пока мы не настроили базу на Render, просто выведем подтверждение
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `
+			<html><body style="text-align:center;padding:50px;font-family:Arial;">
+				<h2 style="color: #27ae60;">Запись успешно создана!</h2>
+				<p>Пациент: <b>%s</b></p>
+				<p>Дата: %s</p>
+				<p>Врач: %s</p>
+				<br>
+				<a href="/callback" style="color: #4285F4;">Вернуться к форме</a>
+			</body></html>
+		`, name, date, doctor)
+
+			log.Printf("Новая запись: %s, %s, %s", name, date, doctor)
+		})
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `
