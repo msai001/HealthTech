@@ -18,29 +18,26 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// Настройка Google OAuth с короткими именами Scopes
 var googleOAuthConfig = &oauth2.Config{
 	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 	RedirectURL:  "https://healthtech-1.onrender.com/callback",
-	Scopes: []string{
-		"openid",
-		"email",
-		"profile",
-	},
-	Endpoint: google.Endpoint,
+	Scopes:       []string{"openid", "email", "profile"},
+	Endpoint:     google.Endpoint,
 }
 
 var db *sql.DB
 
-// Красивые стили для интерфейса
 const sharedStyles = `
 	<style>
 		@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
-		body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-		.card { background: white; padding: 40px; border-radius: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; width: 350px; }
-		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: #10b981; color: white; width: 100%; display: block; text-decoration: none; margin-top: 15px; }
-		.otp-input { font-size: 32px; text-align: center; width: 100%; padding: 10px; border: 2px solid #e2e8f0; border-radius: 12px; margin: 20px 0; outline: none; letter-spacing: 5px; }
+		body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+		.card { background: white; padding: 30px; border-radius: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 450px; }
+		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: #10b981; color: white; width: 100%; display: block; text-decoration: none; margin-top: 10px; transition: 0.2s; }
+		.btn:hover { background: #059669; }
+		.otp-input, .form-input { font-size: 18px; width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 12px; margin: 10px 0; outline: none; box-sizing: border-box; }
+		.appointment-card { border-left: 4px solid #10b981; background: #f9fafb; padding: 15px; margin-bottom: 15px; border-radius: 8px; text-align: left; }
+		label { display: block; text-align: left; font-weight: 600; color: #475569; margin-top: 10px; }
 	</style>
 `
 
@@ -49,133 +46,105 @@ func initDB() {
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal("Ошибка подключения к БД:", err)
+		log.Fatal(err)
 	}
 }
 
 func sendEmailOTP(toEmail, code string) {
-	from := os.Getenv("EMAIL_USER")
-	pass := os.Getenv("EMAIL_PASS")
+	from, pass := os.Getenv("EMAIL_USER"), os.Getenv("EMAIL_PASS")
 	if from == "" || pass == "" {
-		log.Println("Ошибка: EMAIL_USER или EMAIL_PASS не настроены")
 		return
 	}
-
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
-	msg := fmt.Sprintf("Subject: HealthTech Security Code: %s\r\n\r\nYour code is: %s", code, code)
-
-	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
-	if err != nil {
-		log.Printf("Ошибка отправки почты: %v", err)
-	}
+	msg := fmt.Sprintf("Subject: HealthTech Code: %s\r\n\r\nVerification code: %s", code, code)
+	_ = smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
 }
 
 func main() {
 	initDB()
 
-	// 1. Главная страница
+	// 1. ГЛАВНАЯ СТРАНИЦА
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state", oauth2.SetAuthURLParam("prompt", "select_account"))
-		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h1>🌿 HealthTech</h1><a href='%s' class='btn'>Войти через Google</a></div></body></html>", sharedStyles, url)
+		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h1>🌿 HealthTech</h1><p>Система управления записями</p><a href='%s' class='btn'>Войти через Google</a></div></body></html>", sharedStyles, url)
 	})
 
-	// 2. Обработка ответа от Google
+	// 2. CALLBACK
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
-		if code == "" {
-			http.Redirect(w, r, "/", 302)
-			return
-		}
-
 		token, err := googleOAuthConfig.Exchange(context.Background(), code)
 		if err != nil {
-			log.Printf("Exchange error: %v", err)
 			http.Redirect(w, r, "/", 302)
 			return
 		}
-
 		client := googleOAuthConfig.Client(context.Background(), token)
-		resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-		if err != nil {
-			http.Error(w, "Failed to get user info", 500)
-			return
-		}
-		defer resp.Body.Close()
-
+		resp, _ := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 		var userInfo struct{ Email string }
 		json.NewDecoder(resp.Body).Decode(&userInfo)
-
-		if userInfo.Email != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name:    "user_email",
-				Value:   userInfo.Email,
-				Path:    "/",
-				Expires: time.Now().Add(15 * time.Minute),
-			})
-			http.Redirect(w, r, "/otp-verify", 302)
-		} else {
-			http.Redirect(w, r, "/", 302)
-		}
+		http.SetCookie(w, &http.Cookie{Name: "user_email", Value: userInfo.Email, Path: "/", Expires: time.Now().Add(30 * time.Minute)})
+		http.Redirect(w, r, "/otp-verify", 302)
 	})
 
-	// 3. Страница ввода кода (Генерация и отправка)
+	// 3. OTP VERIFY (Генерация кода)
 	http.HandleFunc("/otp-verify", func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("user_email")
-		if err != nil {
+		cookie, _ := r.Cookie("user_email")
+		email := cookie.Value
+		if email == "" {
 			http.Redirect(w, r, "/", 302)
 			return
 		}
-		email := cookie.Value
 
 		var secret string
-		// Берем последний секрет
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 ORDER BY id DESC LIMIT 1", email).Scan(&secret)
-
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' ORDER BY id DESC LIMIT 1", email).Scan(&secret)
 		if secret == "" {
 			key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
 			secret = key.Secret()
-			// Очищаем старые записи перед вставкой, чтобы не было дублей
-			db.Exec("DELETE FROM appointments WHERE user_email = $1", email)
-			db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'User', '2026-01-01', 'System')", email, secret)
+			db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'Новый пользователь', '2026-01-01', 'Система')", email, secret)
 		}
-
-		secret = strings.TrimSpace(secret)
-		otpCode, _ := totp.GenerateCode(secret, time.Now())
-		go sendEmailOTP(email, otpCode)
-
-		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Введите код</h2><p>Отправлено на %s</p><form action='/otp-check' method='POST'><input type='text' name='code' class='otp-input' required autofocus autocomplete='off'><button type='submit' class='btn'>Подтвердить</button></form></div></body></html>", sharedStyles, email)
+		otp, _ := totp.GenerateCode(strings.TrimSpace(secret), time.Now())
+		go sendEmailOTP(email, otp)
+		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Введите код</h2><p>Отправлено на %s</p><form action='/otp-check' method='POST'><input type='text' name='code' class='otp-input' required autofocus><button type='submit' class='btn'>Подтвердить</button></form></div></body></html>", sharedStyles, email)
 	})
 
-	// 4. Проверка введенного кода
+	// 4. OTP CHECK + ЛИЧНЫЙ КАБИНЕТ
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("user_email")
-		if err != nil {
-			http.Redirect(w, r, "/", 302)
-			return
-		}
-		userCode := strings.TrimSpace(r.FormValue("code"))
-
+		cookie, _ := r.Cookie("user_email")
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 ORDER BY id DESC LIMIT 1", cookie.Value).Scan(&secret)
-
-		secret = strings.TrimSpace(secret)
-
-		// Skew 3 дает запас по времени в 1.5 минуты
-		valid, _ := totp.ValidateCustom(userCode, secret, time.Now(), totp.ValidateOpts{
-			Skew: 3, Digits: 6, Period: 30, Algorithm: 0,
-		})
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND totp_secret != '' ORDER BY id DESC LIMIT 1", cookie.Value).Scan(&secret)
+		valid, _ := totp.ValidateCustom(strings.TrimSpace(r.FormValue("code")), strings.TrimSpace(secret), time.Now(), totp.ValidateOpts{Skew: 3, Digits: 6, Period: 30})
 
 		if valid {
-			fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h1>✅ Успех</h1><p>Вы вошли в систему!</p></div></body></html>", sharedStyles)
+			rows, _ := db.Query("SELECT doctor_name, appointment_date, patient_name FROM appointments WHERE user_email = $1", cookie.Value)
+			var listHTML string
+			for rows.Next() {
+				var d, dt, p string
+				rows.Scan(&d, &dt, &p)
+				if d != "Система" { // Скрываем системную запись с секретом
+					listHTML += fmt.Sprintf("<div class='appointment-card'><strong>👨‍⚕️ %s</strong><br><small>📅 %s</small><br>👤 %s</div>", d, dt, p)
+				}
+			}
+			if listHTML == "" {
+				listHTML = "<p>У вас нет записей</p>"
+			}
+
+			fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Личный кабинет</h2><p>%s</p><h3>Мои записи:</h3>%s<hr><form action='/add-appointment' method='POST'><h3>Записаться к врачу</h3><label>Имя врача</label><input name='doc' class='form-input' required><label>Дата и время</label><input name='date' class='form-input' placeholder='20.05.2026 10:00' required><button class='btn'>Записаться</button></form><a href='/' style='display:block; margin-top:20px; color:#64748b;'>Выйти</a></div></body></html>", sharedStyles, cookie.Value, listHTML)
 		} else {
-			fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h1>❌ Ошибка</h1><p>Код неверный.</p><a href='/otp-verify' class='btn'>Попробовать еще раз</a></div></body></html>", sharedStyles)
+			fmt.Fprintf(w, "<script>alert('Неверно'); window.history.back();</script>")
 		}
+	})
+
+	// 5. ДОБАВЛЕНИЕ ЗАПИСИ
+	http.HandleFunc("/add-appointment", func(w http.ResponseWriter, r *http.Request) {
+		cookie, _ := r.Cookie("user_email")
+		if r.Method == "POST" && cookie.Value != "" {
+			db.Exec("INSERT INTO appointments (user_email, doctor_name, appointment_date, patient_name, totp_secret) VALUES ($1, $2, $3, $4, '')", cookie.Value, r.FormValue("doc"), r.FormValue("date"), "Пациент")
+		}
+		fmt.Fprintf(w, "<html><body><script>alert('Запись создана!'); window.location.href='/otp-check?code=INTERNAL';</script></body></html>")
 	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Сервер запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
