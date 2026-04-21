@@ -33,13 +33,13 @@ const sharedStyles = `
 		@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
 		body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
 		.card { background: white; padding: 30px; border-radius: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; width: 100%; max-width: 420px; }
-		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: #10b981; color: white; width: 100%; display: block; text-decoration: none; margin-top: 10px; transition: 0.2s; border: none; font-size: 16px; }
+		.btn { cursor: pointer; border: none; border-radius: 12px; font-weight: 700; padding: 14px; background: #10b981; color: white; width: 100%; display: block; text-decoration: none; margin-top: 10px; transition: 0.2s; font-size: 16px; }
 		.btn:hover { background: #059669; }
-		.btn-delete { background: #fee2e2; color: #ef4444; padding: 8px 12px; border-radius: 8px; font-size: 12px; text-decoration: none; font-weight: bold; float: right; }
-		.btn-delete:hover { background: #fecaca; }
-		.form-input { font-size: 16px; width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 12px; margin: 10px 0; outline: none; box-sizing: border-box; }
-		.appointment-card { border-left: 4px solid #10b981; background: #f9fafb; padding: 15px; margin-bottom: 12px; border-radius: 8px; text-align: left; overflow: hidden; }
-		hr { border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0; }
+		.btn-delete { background: #fee2e2; color: #ef4444; padding: 8px 12px; border-radius: 8px; font-size: 12px; text-decoration: none; font-weight: bold; float: right; border: none; cursor: pointer; }
+		.form-input { font-size: 16px; width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 12px; margin: 10px 0; outline: none; box-sizing: border-box; font-family: inherit; }
+		.appointment-card { border-left: 4px solid #10b981; background: #f9fafb; padding: 15px; margin-bottom: 12px; border-radius: 8px; text-align: left; position: relative; }
+		hr { border: 0; border-top: 1px solid #e2e8f0; margin: 25px 0; }
+		label { display: block; text-align: left; font-size: 14px; font-weight: 600; color: #64748b; margin-top: 10px; }
 	</style>
 `
 
@@ -103,7 +103,7 @@ func main() {
 		db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'User', '2026-01-01', 'System')", email, secret)
 		otp, _ := totp.GenerateCode(secret, time.Now())
 		go sendEmailOTP(email, otp)
-		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Введите код</h2><form action='/otp-check' method='POST'><input type='text' name='code' class='form-input' style='letter-spacing:5px;' required autofocus><button type='submit' class='btn'>Войти</button></form></div></body></html>", sharedStyles)
+		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Введите код</h2><form action='/otp-check' method='POST'><input type='text' name='code' class='form-input' style='letter-spacing:5px; text-align:center;' required autofocus><button type='submit' class='btn'>Войти</button></form></div></body></html>", sharedStyles)
 	})
 
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,6 @@ func main() {
 		}
 	})
 
-	// ОБНОВЛЕННЫЙ DASHBOARD С КНОПКОЙ УДАЛЕНИЯ
 	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		emailCookie, _ := r.Cookie("user_email")
 		sessionCookie, err := r.Cookie("session_valid")
@@ -128,32 +127,46 @@ func main() {
 			return
 		}
 
-		// Выбираем еще и id записи
-		rows, _ := db.Query("SELECT id, doctor_name, appointment_date FROM appointments WHERE user_email = $1 AND doctor_name != 'System' ORDER BY id DESC", emailCookie.Value)
+		rows, _ := db.Query("SELECT id, doctor_name, appointment_date FROM appointments WHERE user_email = $1 AND doctor_name != 'System' ORDER BY appointment_date ASC", emailCookie.Value)
 		var listHTML string
 		for rows.Next() {
 			var id int
 			var d, dt string
 			rows.Scan(&id, &d, &dt)
+			// Красиво форматируем дату для вывода
+			t, _ := time.Parse("2006-01-02T15:04", dt)
+			displayDate := t.Format("02.01.2006 в 15:04")
+			if dt == "" {
+				displayDate = "Дата не указана"
+			}
+
 			listHTML += fmt.Sprintf(`
 				<div class="appointment-card">
-					<a href="/delete?id=%d" class="btn-delete" onclick="return confirm('Удалить запись?')">✕</a>
+					<a href="/delete?id=%d" class="btn-delete" onclick="return confirm('Отменить эту запись?')">✕</a>
 					<strong>👨‍⚕️ %s</strong><br>
-					<small>📅 %s</small>
-				</div>`, id, d, dt)
+					<small style="color: #64748b;">📅 %s</small>
+				</div>`, id, d, displayDate)
 		}
 
-		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Личный кабинет</h2><p>%s</p>%s<hr><form action='/add' method='POST'><input name='doc' placeholder='Врач' class='form-input' required><input name='date' placeholder='Дата' class='form-input' required><button class='btn'>Записаться</button></form><br><a href='/logout' style='color:#64748b; text-decoration:none;'>Выход</a></div></body></html>", sharedStyles, emailCookie.Value, listHTML)
+		fmt.Fprintf(w, "<html><head><meta charset='UTF-8'>%s</head><body><div class='card'><h2>Личный кабинет</h2><p style='color:#64748b; font-size:14px;'>%s</p>%s<hr><form action='/add' method='POST'><h3>Записаться к врачу</h3><label>Выберите врача</label><input name='doc' placeholder='Напр: Стоматолог' class='form-input' required><label>Дата и время</label><input type='datetime-local' name='date' class='form-input' required><button class='btn'>Подтвердить запись</button></form><br><a href='/logout' style='color:#94a3b8; text-decoration:none; font-size:14px;'>Выход из аккаунта</a></div></body></html>", sharedStyles, emailCookie.Value, listHTML)
 	})
 
-	// ОБРАБОТЧИК УДАЛЕНИЯ
+	http.HandleFunc("/add", func(w http.ResponseWriter, r *http.Request) {
+		cookie, _ := r.Cookie("user_email")
+		doc := strings.TrimSpace(r.FormValue("doc"))
+		date := r.FormValue("date")
+
+		if r.Method == "POST" && cookie != nil && doc != "" {
+			db.Exec("INSERT INTO appointments (user_email, doctor_name, appointment_date, patient_name, totp_secret) VALUES ($1, $2, $3, 'Пациент', '')",
+				cookie.Value, doc, date)
+		}
+		http.Redirect(w, r, "/dashboard", 302)
+	})
+
 	http.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("user_email")
-		session, _ := r.Cookie("session_valid")
 		id := r.URL.Query().Get("id")
-
-		if cookie != nil && session != nil && id != "" {
-			// Удаляем только если запись принадлежит текущему пользователю (защита)
+		if cookie != nil && id != "" {
 			db.Exec("DELETE FROM appointments WHERE id = $1 AND user_email = $2", id, cookie.Value)
 		}
 		http.Redirect(w, r, "/dashboard", 302)
@@ -162,15 +175,6 @@ func main() {
 	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: "session_valid", Value: "", Path: "/", MaxAge: -1})
 		http.Redirect(w, r, "/", 302)
-	})
-
-	http.HandleFunc("/add", func(w http.ResponseWriter, r *http.Request) {
-		cookie, _ := r.Cookie("user_email")
-		if r.Method == "POST" && cookie != nil {
-			db.Exec("INSERT INTO appointments (user_email, doctor_name, appointment_date, patient_name, totp_secret) VALUES ($1, $2, $3, 'Пациент', '')",
-				cookie.Value, r.FormValue("doc"), r.FormValue("date"))
-		}
-		http.Redirect(w, r, "/dashboard", 302)
 	})
 
 	port := os.Getenv("PORT")
