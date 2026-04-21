@@ -125,21 +125,33 @@ func main() {
 		otpCode, _ := totp.GenerateCode(secret, time.Now())
 		fmt.Printf("LOGIN: %s -> %s\n", email, otpCode)
 		go sendEmailOTP(email, otpCode)
+		http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie("user_email")
+			if err != nil {
+				http.Redirect(w, r, "/", 302)
+				return
+			}
 
-		fmt.Fprintf(w, "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>%s</head><body><div class='card'><h2>Введите код</h2><form action='/otp-check' method='POST'><input type='text' name='code' class='form-input' style='text-align:center;letter-spacing:5px;' required autofocus autocomplete='off'><button type='submit' class='btn'>Подтвердить</button></form><br><a href='/otp-verify' style='font-size:12px;color:var(--text-muted);'>Отправить еще раз</a></div></body></html>", sharedStyles)
-	})
+			var secret string
+			db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND doctor_name = 'System' LIMIT 1", cookie.Value).Scan(&secret)
 
-	// 4. OTP CHECK
-	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("user_email")
-		if err != nil {
-			http.Redirect(w, r, "/", 302)
-			return
-		}
+			// МЫ УВЕЛИЧИВАЕМ Skew до 20.
+			// Это значит, что сервер проверит коды на 10 минут назад и на 10 минут вперед.
+			valid, _ := totp.ValidateCustom(strings.TrimSpace(r.FormValue("code")), strings.TrimSpace(secret), time.Now(), totp.ValidateOpts{
+				Skew:   20,
+				Digits: 6,
+				Period: 30,
+			})
 
-		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND doctor_name = 'System' LIMIT 1", cookie.Value).Scan(&secret)
-
+			if valid {
+				http.SetCookie(w, &http.Cookie{Name: "session_valid", Value: "true", Path: "/", MaxAge: 86400, HttpOnly: true})
+				http.Redirect(w, r, "/dashboard", 302)
+			} else {
+				// Добавим отладочный вывод в консоль Render, чтобы видеть, что происходит
+				fmt.Printf("ERROR: Неверный код %s для пользователя %s\n", r.FormValue("code"), cookie.Value)
+				fmt.Fprintf(w, "<html><body style='font-family:sans-serif; text-align:center; padding:50px;'><h2>Ошибка кода</h2><p>Сервер не принял код. Убедитесь, что вы вводите код из САМОГО ПОСЛЕДНЕГО письма.</p><a href='/otp-verify'>Попробовать еще раз</a></body></html>")
+			}
+		})
 		valid, _ := totp.ValidateCustom(strings.TrimSpace(r.FormValue("code")), strings.TrimSpace(secret), time.Now(), totp.ValidateOpts{Skew: 10})
 		if valid {
 			http.SetCookie(w, &http.Cookie{Name: "session_valid", Value: "true", Path: "/", MaxAge: 86400, HttpOnly: true})
