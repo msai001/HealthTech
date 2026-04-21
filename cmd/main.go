@@ -43,6 +43,7 @@ const sharedStyles = `
 		.btn-delete { position: absolute; right: 15px; top: 15px; color: #94a3b8; text-decoration: none; font-size: 18px; font-weight: bold; }
 		label { display: block; text-align: left; font-size: 13px; font-weight: 600; color: var(--text-muted); margin-left: 5px; }
 		hr { border: 0; border-top: 1px solid #f1f5f9; margin: 30px 0; }
+		#search-input { background: #f8fafc; border-radius: 12px; padding: 10px 15px; margin-bottom: 20px; border: 1px solid #cbd5e1; }
 	</style>
 `
 
@@ -82,6 +83,7 @@ func sendAppointmentEmail(toEmail, doctor, dateStr string) {
 func main() {
 	initDB()
 
+	// 1. HOME
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		session, err := r.Cookie("session_valid")
 		if err == nil && session.Value == "true" {
@@ -91,6 +93,7 @@ func main() {
 		fmt.Fprintf(w, "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>%s</head><body><div class='card'><h1>🌿 HealthTech</h1><a href='%s' class='btn'>Войти через Google</a></div></body></html>", sharedStyles, googleOAuthConfig.AuthCodeURL("state"))
 	})
 
+	// 2. CALLBACK
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		token, _ := googleOAuthConfig.Exchange(context.Background(), code)
@@ -102,6 +105,7 @@ func main() {
 		http.Redirect(w, r, "/otp-verify", 302)
 	})
 
+	// 3. OTP VERIFY (Стабильный ключ)
 	http.HandleFunc("/otp-verify", func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("user_email")
 		if err != nil {
@@ -109,32 +113,43 @@ func main() {
 			return
 		}
 		email := cookie.Value
-		db.Exec("DELETE FROM appointments WHERE user_email = $1 AND doctor_name = 'System'", email)
-		key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
-		secret := key.Secret()
-		db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'User', '2026-01-01', 'System')", email, secret)
-		otp, _ := totp.GenerateCode(secret, time.Now())
-		go sendEmailOTP(email, otp)
-		fmt.Fprintf(w, "<html><head>%s</head><body><div class='card'><h2>Введите код</h2><form action='/otp-check' method='POST'><input type='text' name='code' class='form-input' style='text-align:center;letter-spacing:5px;' required autofocus><button type='submit' class='btn'>Подтвердить</button></form></div></body></html>", sharedStyles)
+
+		var secret string
+		err = db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND doctor_name = 'System' LIMIT 1", email).Scan(&secret)
+		if err != nil {
+			key, _ := totp.Generate(totp.GenerateOpts{Issuer: "HealthTech", AccountName: email})
+			secret = key.Secret()
+			db.Exec("INSERT INTO appointments (user_email, totp_secret, patient_name, appointment_date, doctor_name) VALUES ($1, $2, 'User', '2026-01-01', 'System')", email, secret)
+		}
+
+		otpCode, _ := totp.GenerateCode(secret, time.Now())
+		fmt.Printf("LOGIN: %s -> %s\n", email, otpCode)
+		go sendEmailOTP(email, otpCode)
+
+		fmt.Fprintf(w, "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>%s</head><body><div class='card'><h2>Введите код</h2><form action='/otp-check' method='POST'><input type='text' name='code' class='form-input' style='text-align:center;letter-spacing:5px;' required autofocus autocomplete='off'><button type='submit' class='btn'>Подтвердить</button></form><br><a href='/otp-verify' style='font-size:12px;color:var(--text-muted);'>Отправить еще раз</a></div></body></html>", sharedStyles)
 	})
 
+	// 4. OTP CHECK
 	http.HandleFunc("/otp-check", func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("user_email")
 		if err != nil {
 			http.Redirect(w, r, "/", 302)
 			return
 		}
+
 		var secret string
-		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND doctor_name = 'System' ORDER BY id DESC LIMIT 1", cookie.Value).Scan(&secret)
+		db.QueryRow("SELECT totp_secret FROM appointments WHERE user_email = $1 AND doctor_name = 'System' LIMIT 1", cookie.Value).Scan(&secret)
+
 		valid, _ := totp.ValidateCustom(strings.TrimSpace(r.FormValue("code")), strings.TrimSpace(secret), time.Now(), totp.ValidateOpts{Skew: 10})
 		if valid {
 			http.SetCookie(w, &http.Cookie{Name: "session_valid", Value: "true", Path: "/", MaxAge: 86400, HttpOnly: true})
 			http.Redirect(w, r, "/dashboard", 302)
 		} else {
-			fmt.Fprintf(w, "<script>alert('Неверный код'); window.history.back();</script>")
+			fmt.Fprintf(w, "<script>alert('Неверно! Проверьте время на телефоне.'); window.history.back();</script>")
 		}
 	})
 
+	// 5. DASHBOARD (Дизайн + Поиск)
 	http.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		emailCookie, errEmail := r.Cookie("user_email")
 		sessionCookie, errSess := r.Cookie("session_valid")
@@ -157,12 +172,13 @@ func main() {
 		<body><div class='card'><h2>Мой кабинет</h2><p style='font-size:12px;color:var(--text-muted);'>%s</p>
 		<input type="text" id="search-input" class="form-input" placeholder="🔍 Поиск врача..." onkeyup="filter()">
 		<div id="list" style="margin-top:20px;">%s</div><hr>
-		<form action='/add' method='POST'><label>Врач</label><input name='doc' class='form-input' required><label>Дата</label><input type='datetime-local' name='date' class='form-input' required><button class='btn'>Записаться</button></form>
+		<form action='/add' method='POST'><label>Врач</label><input name='doc' class='form-input' required placeholder='Окулист'><label>Дата</label><input type='datetime-local' name='date' class='form-input' required><button class='btn'>Записаться</button></form>
 		<br><a href='/logout' style='color:var(--text-muted);text-decoration:none;font-size:13px;'>Выйти</a></div>
 		<script>function filter(){let val=document.getElementById('search-input').value.toLowerCase();let cards=document.getElementsByClassName('appointment-card');for(let c of cards){c.style.display=c.getAttribute('data-doctor').toLowerCase().includes(val)?"":"none"}}</script>
 		</body></html>`, sharedStyles, emailCookie.Value, listHTML)
 	})
 
+	// 6. ADD & DELETE & LOGOUT
 	http.HandleFunc("/add", func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("user_email")
 		doc, date := r.FormValue("doc"), r.FormValue("date")
