@@ -16,20 +16,23 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
+// Константа для почты врача (замени на свою, если нужно)
 const DOCTOR_EMAIL = "nur.mahambet2005@gmail.com"
 
-var googleOAuthConfig = &oauth2.Config{
-	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-	RedirectURL:  "https://healthtech-1.onrender.com/callback",
-	Scopes:       []string{"openid", "email", "profile"},
-	Endpoint:     google.Endpoint,
-}
-
-var db *sql.DB
+var (
+	db                *sql.DB
+	googleOAuthConfig = &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  "https://healthtech-1.onrender.com/callback",
+		Scopes:       []string{"openid", "email", "profile"},
+		Endpoint:     google.Endpoint,
+	}
+)
 
 func main() {
 	var err error
+	// Подключение к базе данных Render PostgreSQL
 	db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
@@ -37,42 +40,31 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 
-	http.HandleFunc("/api/auth/google", func(w http.ResponseWriter, r *http.Request) {
-		url := googleOAuthConfig.AuthCodeURL("state")
-		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-	})
-
+	// Роуты API
+	http.HandleFunc("/api/auth/google", handleLogin)
 	http.HandleFunc("/callback", handleCallback)
 	http.HandleFunc("/api/data", handleData)
 	http.HandleFunc("/api/chat", handleChat)
-
-	// Маршрут для смены аккаунта
-	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
-		cookieClear(w, "user_email")
-		cookieClear(w, "user_role")
-		cookieClear(w, "user_otp")
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-
+	http.HandleFunc("/logout", handleLogout)
 	http.HandleFunc("/", handleRoot)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("v2.3.0 LIVE - Multi-Account System & Premium UI")
+
+	log.Printf("HealthTech OS v2.5.3 | Port: %s | Status: Online", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-func cookieClear(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:   name,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
-	})
+// 1. ВХОД ЧЕРЕЗ GOOGLE
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	// prompt=select_account заставляет Google всегда спрашивать выбор почты
+	url := googleOAuthConfig.AuthCodeURL("state", oauth2.SetAuthURLParam("prompt", "select_account"))
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
+// 2. CALLBACK (ОБРАБОТКА ПОСЛЕ ВХОДА)
 func handleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	token, err := googleOAuthConfig.Exchange(context.Background(), code)
@@ -83,7 +75,11 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	client := googleOAuthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-	if err != nil || resp == nil {
+	if err != nil {
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+	if resp == nil {
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
 	}
@@ -93,35 +89,34 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		Name  string `json:"name"`
 	}
-	json.NewDecoder(resp.Body).Decode(&user)
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
 
+	// Определение роли
 	role := "patient"
 	if user.Email == DOCTOR_EMAIL {
 		role = "doctor"
 	}
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-	db.Exec(`INSERT INTO appointments (user_email, role, patient_name, totp_secret, appointment_date) 
+	// Сохранение в БД (PostgreSQL)
+	_, _ = db.Exec(`INSERT INTO appointments (user_email, role, patient_name, totp_secret, appointment_date) 
 		VALUES ($1, $2, $3, $4, NOW()) 
-		ON CONFLICT (user_email) DO UPDATE SET totp_secret = $4`,
+		ON CONFLICT (user_email) DO UPDATE SET patient_name = $3, role = $2`,
 		user.Email, role, user.Name, otp)
 
+	// Установка куки
 	setCookie(w, "user_email", user.Email)
 	setCookie(w, "user_role", role)
 	setCookie(w, "user_otp", otp)
+	setCookie(w, "user_name", user.Name)
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func setCookie(w http.ResponseWriter, name, value string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:   name,
-		Value:  value,
-		Path:   "/",
-		MaxAge: 604800,
-	})
-}
-
+// 3. ПОЛУЧЕНИЕ И ОБНОВЛЕНИЕ ДАННЫХ (GET/POST)
 func handleData(w http.ResponseWriter, r *http.Request) {
 	cEmail, _ := r.Cookie("user_email")
 	cRole, _ := r.Cookie("user_role")
@@ -131,64 +126,88 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 			Email     string `json:"email"`
 			Diagnosis string `json:"diagnosis"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
-		db.Exec("UPDATE appointments SET diagnosis = $1 WHERE user_email = $2", req.Diagnosis, req.Email)
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			db.Exec("UPDATE appointments SET diagnosis = $1 WHERE user_email = $2", req.Diagnosis, req.Email)
+		}
 		return
 	}
 
-	query := "SELECT id, user_email, diagnosis, appointment_date, totp_secret FROM appointments"
+	// SQL Запрос с фильтром по роли
+	query := "SELECT id, user_email, diagnosis, appointment_date, patient_name FROM appointments"
 	if cRole != nil && cRole.Value == "patient" {
 		query += " WHERE user_email = '" + cEmail.Value + "'"
 	}
 
-	rows, _ := db.Query(query + " ORDER BY id DESC")
-	if rows != nil {
-		defer rows.Close()
-		var list []map[string]interface{}
-		for rows.Next() {
-			var id int
-			var email, diag, date, otp string
-			rows.Scan(&id, &email, &diag, &date, &otp)
-			list = append(list, map[string]interface{}{
-				"id":    id,
-				"email": email,
-				"diag":  diag,
-				"date":  date,
-				"otp":   otp,
-			})
-		}
-		json.NewEncoder(w).Encode(list)
+	rows, err := db.Query(query + " ORDER BY id DESC")
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
 	}
+	defer rows.Close()
+
+	var list []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var email, diag, date, name string
+		rows.Scan(&id, &email, &diag, &date, &name)
+		list = append(list, map[string]interface{}{
+			"id":    id,
+			"email": email,
+			"diag":  diag,
+			"date":  date,
+			"name":  name,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
 }
 
+// 4. ЧАТ
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		var msg struct {
 			Text string `json:"text"`
 		}
-		json.NewDecoder(r.Body).Decode(&msg)
+		_ = json.NewDecoder(r.Body).Decode(&msg)
 		cEmail, _ := r.Cookie("user_email")
 		if cEmail != nil {
 			db.Exec("INSERT INTO messages (sender, text) VALUES ($1, $2)", cEmail.Value, msg.Text)
 		}
 	} else {
-		rows, _ := db.Query("SELECT sender, text FROM messages ORDER BY id ASC")
-		if rows != nil {
-			defer rows.Close()
-			var msgs []map[string]string
-			for rows.Next() {
-				var s, t string
-				rows.Scan(&s, &t)
-				msgs = append(msgs, map[string]string{
-					"sender": s,
-					"text":   t,
-				})
-			}
-			json.NewEncoder(w).Encode(msgs)
+		rows, err := db.Query("SELECT sender, text FROM messages ORDER BY id ASC")
+		if err != nil {
+			return
 		}
+		defer rows.Close()
+		var msgs []map[string]string
+		for rows.Next() {
+			var s, t string
+			rows.Scan(&s, &t)
+			msgs = append(msgs, map[string]string{
+				"sender": s,
+				"text":   t,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(msgs)
 	}
 }
 
+// 5. ВЫХОД
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	names := []string{"user_email", "user_role", "user_otp", "user_name"}
+	for _, name := range names {
+		http.SetCookie(w, &http.Cookie{
+			Name:   name,
+			Value:  "",
+			Path:   "/",
+			MaxAge: -1,
+		})
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// 6. ГЛАВНАЯ СТРАНИЦА (HTML)
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
@@ -196,165 +215,118 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>HealthOS Premium</title>
+    <title>HealthOS | Личный кабинет</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { --primary: #3b82f6; --dark: #0f172a; --bg: #f8fafc; }
-        body { font-family: 'Inter', sans-serif; margin: 0; background: var(--bg); display: flex; height: 100vh; overflow: hidden; }
+        :root { --primary: #2563eb; --dark: #0f172a; --bg: #f8fafc; }
+        body { font-family: 'Inter', sans-serif; margin: 0; background: var(--bg); display: flex; height: 100vh; color: #334155; }
         
-        .sidebar { width: 320px; background: var(--dark); color: white; display: flex; flex-direction: column; padding: 25px; transition: 0.3s; }
-        .logo { font-size: 24px; font-weight: 900; background: linear-gradient(to right, #60a5fa, #2563eb); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 35px; }
+        .sidebar { width: 300px; background: #0f172a; color: white; display: flex; flex-direction: column; padding: 30px 20px; }
+        .logo { font-size: 24px; font-weight: 800; color: #38bdf8; margin-bottom: 40px; display: flex; align-items: center; gap: 10px; }
         
-        /* Личный кабинет */
-        .profile-area { background: #1e293b; padding: 20px; border-radius: 20px; border: 1px solid #334155; margin-bottom: 30px; }
-        .p-role { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #60a5fa; margin-bottom: 5px; font-weight: bold; }
-        .p-email { font-size: 13px; font-weight: 600; color: #f1f5f9; word-break: break-all; }
-        .p-otp { background: #0f172a; border-radius: 12px; padding: 12px; margin: 15px 0; text-align: center; font-size: 22px; font-family: monospace; color: #fff; border: 1px dashed #3b82f6; }
+        .user-panel { background: #1e293b; padding: 20px; border-radius: 16px; margin-bottom: 25px; border: 1px solid #334155; }
+        .u-role { font-size: 10px; text-transform: uppercase; color: #38bdf8; font-weight: bold; }
+        .u-name { font-size: 16px; font-weight: 600; margin: 5px 0; color: #f1f5f9; }
+        .u-otp { font-family: monospace; font-size: 22px; color: #fff; background: #0f172a; padding: 10px; border-radius: 10px; text-align: center; margin: 15px 0; border: 1px dashed #2563eb; }
+
+        .nav-link { padding: 12px 15px; border-radius: 10px; color: #94a3b8; cursor: pointer; display: flex; align-items: center; gap: 12px; margin-bottom: 8px; transition: 0.2s; }
+        .nav-link:hover, .nav-link.active { background: var(--primary); color: white; }
+
+        .exit-btn { background: #ef4444; color: white; border: none; padding: 12px; border-radius: 10px; cursor: pointer; width: 100%; font-weight: bold; margin-top: auto; }
+
+        .main { flex: 1; padding: 40px; overflow-y: auto; }
+        .card { background: white; border-radius: 20px; padding: 25px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #e2e8f0; }
         
-        .nav-link { padding: 14px 18px; border-radius: 12px; color: #94a3b8; text-decoration: none; display: flex; align-items: center; gap: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.2s; }
-        .nav-link:hover, .nav-link.active { background: var(--primary); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
-
-        .btn-logout { background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 12px; border-radius: 12px; width: 100%; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; }
-        .btn-logout:hover { background: #ef4444; color: white; }
-
-        /* Контент */
-        .content { flex: 1; padding: 40px; overflow-y: auto; }
-        .tab { display: none; animation: fadeInUp 0.4s ease; }
-        .tab.active { display: block; }
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
-
-        .card { background: white; border-radius: 24px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #f1f5f9; }
-        .card h3 { margin: 0 0 20px 0; font-size: 18px; display: flex; align-items: center; gap: 10px; color: #1e293b; }
+        .status-card { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; display: flex; justify-content: space-between; align-items: center; }
 
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px; color: #94a3b8; font-size: 12px; text-transform: uppercase; }
-        td { padding: 16px 12px; border-top: 1px solid #f1f5f9; font-size: 14px; }
+        td { padding: 15px 12px; border-top: 1px solid #f1f5f9; font-size: 14px; }
+        .badge { background: #f0fdf4; color: #166534; padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 12px; }
 
-        .input-ui { background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px 16px; border-radius: 12px; outline: none; transition: 0.2s; }
-        .input-ui:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
-        .btn-primary { background: var(--primary); color: white; border: none; padding: 12px 24px; border-radius: 12px; font-weight: bold; cursor: pointer; }
+        .input { width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 10px; outline: none; }
     </style>
 </head>
 <body>
     <div class="sidebar">
-        <div class="logo"><i class="fas fa-bolt"></i> HealthTech OS</div>
-        
-        <div id="profile-section">
-            </div>
-
+        <div class="logo"><i class="fas fa-stethoscope"></i> HealthOS</div>
+        <div id="side-profile"></div>
         <nav>
-            <div class="nav-link active" onclick="switchTab('main')"><i class="fas fa-compass"></i> Обзор</div>
-            <div class="nav-link" onclick="switchTab('doctors')"><i class="fas fa-user-md"></i> Мои врачи</div>
-            <div class="nav-link" onclick="switchTab('bills')"><i class="fas fa-file-invoice-dollar"></i> Счета</div>
+            <div class="nav-link active"><i class="fas fa-house"></i> Главная</div>
+            <div class="nav-link"><i class="fas fa-file-medical"></i> Медкарта</div>
         </nav>
+        <button class="exit-btn" onclick="location.href='/logout'">Выход</button>
     </div>
 
-    <div class="content">
-        <div id="tab-main" class="tab active">
-            <div id="doctor-controls" class="card" style="display:none; background: #f0f7ff;">
-                <h3><i class="fas fa-shield-halved"></i> Консоль доктора</h3>
-                <div style="display:grid; grid-template-columns: 1fr 2fr auto; gap: 15px;">
-                    <input id="p-email" class="input-ui" placeholder="Email пациента">
-                    <input id="p-diag" class="input-ui" placeholder="Медицинское заключение">
-                    <button class="btn-primary" onclick="saveData()">Обновить</button>
-                </div>
-            </div>
-
-            <div class="card">
-                <h3><i class="fas fa-notes-medical"></i> Журнал пациентов</h3>
-                <table>
-                    <thead><tr><th>Дата</th><th>Пациент</th><th>Заключение</th></tr></thead>
-                    <tbody id="data-table"></tbody>
-                </table>
-            </div>
-
-            <div class="card">
-                <h3><i class="fas fa-comments"></i> Сообщения</h3>
-                <div id="chat-window" style="height:250px; overflow-y:auto; margin-bottom:20px; padding:15px; background:#f8fafc; border-radius:15px; line-height:1.6;"></div>
-                <div style="display:flex; gap:12px;">
-                    <input id="chat-in" class="input-ui" style="flex:1" placeholder="Ваше сообщение...">
-                    <button class="btn-primary" onclick="sendMsg()"><i class="fas fa-paper-plane"></i></button>
-                </div>
+    <div class="main">
+        <div id="doc-tool" class="card" style="display:none; border-top: 5px solid #f59e0b;">
+            <h3>Панель управления врача</h3>
+            <div style="display:grid; grid-template-columns: 1fr 2fr auto; gap:10px;">
+                <input id="t-mail" class="input" placeholder="Почта пациента">
+                <input id="t-diag" class="input" placeholder="Диагноз">
+                <button onclick="save()" style="background:var(--primary); color:white; border:none; padding:10px 20px; border-radius:10px; cursor:pointer;">ОК</button>
             </div>
         </div>
 
-        <div id="tab-doctors" class="tab">
-            <div class="card">
-                <h3>Специалисты</h3>
-                <div style="display:flex; gap:20px; align-items:center; background:#f8fafc; padding:20px; border-radius:15px;">
-                    <i class="fas fa-user-circle fa-4x" style="color:#cbd5e1"></i>
-                    <div>
-                        <div style="font-weight:800; font-size:18px;">Махамбет Нур</div>
-                        <div style="color:#64748b;">Главный врач информационных систем</div>
-                    </div>
-                </div>
+        <div class="status-card">
+            <div>
+                <div style="font-size: 12px; opacity: 0.8;">СТАТУС ОСМС</div>
+                <div style="font-size: 24px; font-weight: 800;">ЗАСТРАХОВАН</div>
+                <div style="margin-top:10px; font-size: 13px;"><i class="fas fa-location-dot"></i> Атырау, Поликлиника №1</div>
             </div>
+            <i class="fas fa-shield-check fa-4x" style="opacity: 0.2;"></i>
         </div>
 
-        <div id="tab-bills" class="tab">
-            <div class="card">
-                <h3>Баланс и ОСМС</h3>
-                <div style="background:#dcfce7; color:#166534; padding:25px; border-radius:20px; font-weight:bold; display:flex; align-items:center; gap:15px;">
-                    <i class="fas fa-check-circle fa-2x"></i>
-                    Ваша страховка активна. Все услуги бесплатны.
-                </div>
-            </div>
+        <div class="card" style="margin-top:25px;">
+            <h3><i class="fas fa-history"></i> Журнал записей</h3>
+            <table><tbody id="data-body"></tbody></table>
         </div>
     </div>
 
     <script>
-        function switchTab(name) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-            document.getElementById('tab-'+name).classList.add('active');
-            event.currentTarget.classList.add('active');
+        const getC = (n) => document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')?. [2];
+        const email = getC('user_email');
+        const role = getC('user_role');
+        const name = getC('user_name');
+        const otp = getC('user_otp');
+
+        if(email) {
+            document.getElementById('side-profile').innerHTML = 
+                '<div class="user-panel"><div class="u-role">'+(role==='doctor'?'ВРАЧ':'ПАЦИЕНТ')+'</div><div class="u-name">'+decodeURIComponent(name)+'</div><div style="font-size:11px; color:#64748b;">'+email+'</div><div class="u-otp">'+otp+'</div></div>';
+            if(role === 'doctor') document.getElementById('doc-tool').style.display = 'block';
+        } else {
+            location.href = '/api/auth/google';
         }
-
-        function getCookie(name) {
-            let matches = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"));
-            return matches ? decodeURIComponent(matches[1]) : undefined;
-        }
-
-        const email = getCookie('user_email');
-        const role = getCookie('user_role');
-        const otp = getCookie('user_otp');
-
-		const profileSection = document.getElementById('profile-section');
-		if(email) {
-			profileSection.innerHTML = "<div class=\"profile-area\"><div class=\"p-role\">" + (role === 'doctor' ? 'Главный врач' : 'Кабинет пациента') + "</div><div class=\"p-email\">" + email + "</div><div class=\"p-otp\">" + (otp || '000000') + "</div><button class=\"btn-logout\" onclick=\"location.href='/logout'\"><i class=\"fas fa-sync-alt\"></i> Сменить аккаунт</button></div>";
-			if(role === 'doctor') document.getElementById('doctor-controls').style.display = 'block';
-		} else {
-			profileSection.innerHTML = '<button class="btn-primary" style="width:100%; margin-bottom:30px;" onclick="location.href=\'/api/auth/google\'">Войти через Google</button>';
-		}
 
         function refresh() {
             fetch('/api/data').then(r => r.json()).then(data => {
-                document.getElementById('data-table').innerHTML = data.map(i => 
-                    '<tr><td>'+i.date.split('T')[0]+'</td><td>'+i.email+'</td><td><span style="background:#f1f5f9; padding:6px 12px; border-radius:8px; font-weight:bold;">'+(i.diag || 'В очереди')+'</span></td></tr>'
+                document.getElementById('data-body').innerHTML = data.map(d => 
+                    '<tr><td>'+d.date.split('T')[0]+'</td><td><b>'+d.name+'</b></td><td><span class="badge">'+(d.diag || 'Ожидает')+'</span></td></tr>'
                 ).join('');
             });
-            fetch('/api/chat').then(r => r.json()).then(msgs => {
-                document.getElementById('chat-window').innerHTML = msgs.map(m => '<div style="margin-bottom:8px;"><b>'+m.sender.split('@')[0]+':</b> '+m.text+'</div>').join('');
+        }
+
+        function save() {
+            const email = document.getElementById('t-mail').value;
+            const diagnosis = document.getElementById('t-diag').value;
+            fetch('/api/data', { method: 'POST', body: JSON.stringify({email, diagnosis}) }).then(() => {
+                alert('Обновлено'); refresh();
             });
         }
 
-        function saveData() {
-            fetch('/api/data', {
-                method: 'POST',
-                body: JSON.stringify({email: document.getElementById('p-email').value, diagnosis: document.getElementById('p-diag').value})
-            }).then(() => { alert('Сохранено!'); refresh(); });
-        }
-
-        function sendMsg() {
-            fetch('/api/chat', {
-                method: 'POST',
-                body: JSON.stringify({text: document.getElementById('chat-in').value})
-            }).then(() => { document.getElementById('chat-in').value = ''; refresh(); });
-        }
-
-        if(email) { setInterval(refresh, 5000); refresh(); }
+        setInterval(refresh, 5000);
+        refresh();
     </script>
 </body>
 </html>
 	`)
+}
+
+// Вспомогательная функция для куки
+func setCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:   name,
+		Value:  value,
+		Path:   "/",
+		MaxAge: 604800,
+	})
 }
