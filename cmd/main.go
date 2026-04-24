@@ -6,15 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
-// ВНИМАНИЕ: Твой email станет почтой ВРАЧА
+// ВНИМАНИЕ: Проверь свою почту здесь
 const DOCTOR_EMAIL = "nur.mahambet2005@gmail.com"
 
 var googleOAuthConfig = &oauth2.Config{
@@ -34,6 +36,8 @@ func main() {
 		log.Fatal(err)
 	}
 
+	rand.Seed(time.Now().UnixNano())
+
 	http.HandleFunc("/api/auth/google", func(w http.ResponseWriter, r *http.Request) {
 		url := googleOAuthConfig.AuthCodeURL("state")
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
@@ -48,7 +52,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Starting v1.7.5 - Doctor/Patient System")
+	log.Printf("Starting v1.8.5 - Full Medical OS")
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -62,13 +66,16 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	client := googleOAuthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-	if err != nil || resp == nil { // Исправление ошибки из VS Code
+	if err != nil || resp == nil {
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
 	}
 	defer resp.Body.Close()
 
-	var user struct{ Email string }
+	var user struct {
+		Email string
+		Name  string
+	}
 	json.NewDecoder(resp.Body).Decode(&user)
 
 	role := "patient"
@@ -76,12 +83,33 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 		role = "doctor"
 	}
 
-	// Если пациента нет в базе - создаем пустую запись
-	db.Exec("INSERT INTO appointments (user_email, role, patient_name) VALUES ($1, $2, 'Новый пациент') ON CONFLICT DO NOTHING", user.Email, role)
+	// ГЕНЕРАЦИЯ OTP ПРИ ВХОДЕ
+	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-	http.SetCookie(w, &http.Cookie{Name: "user_email", Value: user.Email, Path: "/"})
-	http.SetCookie(w, &http.Cookie{Name: "user_role", Value: role, Path: "/"})
+	// Сохраняем или обновляем пользователя и его последний OTP
+	_, err = db.Exec(`
+		INSERT INTO appointments (user_email, role, patient_name, totp_secret, appointment_date) 
+		VALUES ($1, $2, $3, $4, NOW()) 
+		ON CONFLICT (user_email) 
+		DO UPDATE SET totp_secret = $4, appointment_date = NOW()`,
+		user.Email, role, user.Name, otp)
+
+	// АВТОСОХРАНЕНИЕ: Ставим куки на 7 дней
+	setSecureCookie(w, "user_email", user.Email)
+	setSecureCookie(w, "user_role", role)
+	setSecureCookie(w, "user_otp", otp)
+
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func setSecureCookie(w http.ResponseWriter, name, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   604800, // 7 дней
+		HttpOnly: false,  // Чтобы JS мог прочитать для интерфейса
+	})
 }
 
 func handleData(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +123,7 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := "SELECT id, user_email, diagnosis, appointment_date FROM appointments"
+	query := "SELECT id, user_email, diagnosis, appointment_date, totp_secret FROM appointments"
 	if cRole.Value == "patient" {
 		query += " WHERE user_email = '" + cEmail.Value + "'"
 	}
@@ -105,9 +133,9 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 	var list []map[string]interface{}
 	for rows.Next() {
 		var id int
-		var email, diag, date string
-		rows.Scan(&id, &email, &diag, &date)
-		list = append(list, map[string]interface{}{"id": id, "email": email, "diag": diag, "date": date})
+		var email, diag, date, otp string
+		rows.Scan(&id, &email, &diag, &date, &otp)
+		list = append(list, map[string]interface{}{"id": id, "email": email, "diag": diag, "date": date, "otp": otp})
 	}
 	json.NewEncoder(w).Encode(list)
 }
@@ -137,87 +165,105 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	<!DOCTYPE html>
 	<html>
 	<head>
-		<title>HealthTech Portal</title>
+		<meta charset="UTF-8">
+		<title>Health Monitoring System</title>
 		<style>
-			body { font-family: sans-serif; background: #f0f4f8; margin: 0; padding: 20px; }
-			.container { max-width: 900px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-			.role-doc { background: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #ffc107; }
-			table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-			th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: left; }
-			.chat { background: #f9f9f9; height: 150px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin: 15px 0; border-radius: 5px; }
-			input, button { padding: 10px; border-radius: 5px; border: 1px solid #ccc; }
-			.btn-main { background: #4285F4; color: white; border: none; cursor: pointer; }
+			:root { --blue: #4285F4; --dark: #202124; --gray: #f8f9fa; }
+			body { font-family: 'Google Sans', Arial, sans-serif; margin: 0; background: var(--gray); display: flex; height: 100vh; }
+			.sidebar { width: 250px; background: white; border-right: 1px solid #ddd; padding: 20px; display: flex; flex-direction: column; }
+			.main { flex: 1; padding: 40px; overflow-y: auto; }
+			.card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+			.otp-box { background: #e8f0fe; padding: 15px; border-radius: 8px; border: 1px solid var(--blue); color: var(--blue); font-weight: bold; margin-bottom: 20px; }
+			table { width: 100%; border-collapse: collapse; }
+			th { text-align: left; color: #5f6368; font-size: 14px; padding: 10px; border-bottom: 2px solid #eee; }
+			td { padding: 15px 10px; border-bottom: 1px solid #eee; }
+			.btn { background: var(--blue); color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; }
+			.doctor-only { background: #fff4e5; border-left: 5px solid #ffa000; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
 		</style>
 	</head>
 	<body>
-		<div class="container">
-			<div style="display:flex; justify-content:space-between; align-items:center;">
-				<h1>Health Monitoring <span id="role" style="font-size:0.5em; color:#666;"></span></h1>
-				<a href="/api/auth/google" style="text-decoration:none; color:#4285F4;">Сменить аккаунт</a>
+		<div class="sidebar">
+			<h2 style="color:var(--blue)">HealthTech</h2>
+			<hr>
+			<p><b>Личный кабинет</b></p>
+			<div id="user-info" style="font-size: 0.9em; color: #555;">Загрузка...</div>
+			<br>
+			<a href="/api/auth/google" class="btn" style="text-align:center">Войти / Обновить</a>
+		</div>
+		<div class="main">
+			<div id="otp-display" class="otp-box" style="display:none;">
+				🔐 Ваш текущий OTP код для верификации: <span id="otp-code">000000</span>
 			</div>
 
-			<div id="doctor-tools" style="display:none;" class="role-doc">
-				<h3>Управление диагнозами (Только для врача)</h3>
-				<input id="p-email" placeholder="Email пациента">
-				<input id="p-diag" style="width:40%" placeholder="Введите диагноз">
-				<button class="btn-main" onclick="publish()">Опубликовать</button>
+			<div id="doctor-panel" class="doctor-only" style="display:none;">
+				<h3>Панель управления (Врач)</h3>
+				<input id="target-email" placeholder="Email пациента" style="padding:10px">
+				<input id="diag-text" placeholder="Диагноз" style="padding:10px; width:300px">
+				<button class="btn" onclick="sendDiag()">Сохранить диагноз</button>
 			</div>
 
-			<h3>Ваш Личный кабинет:</h3>
-			<table>
-				<thead><tr><th>Дата</th><th>Аккаунт</th><th>Диагноз врача</th></tr></thead>
-				<tbody id="med-data"></tbody>
-			</table>
+			<div class="card">
+				<h3>Медицинская карта</h3>
+				<table>
+					<thead><tr><th>Дата</th><th>Пациент</th><th>Диагноз</th></tr></thead>
+					<tbody id="table-body"></tbody>
+				</table>
+			</div>
 
-			<div style="margin-top:40px; border-top: 2px solid #eee; padding-top:20px;">
-				<h3>Чат с врачом (Online)</h3>
-				<div class="chat" id="chat-box">Загрузка сообщений...</div>
-				<input id="msg-input" style="width:70%" placeholder="Напишите сообщение...">
-				<button class="btn-main" onclick="sendMsg()">Отправить</button>
+			<div class="card">
+				<h3>Чат с поддержкой</h3>
+				<div id="chat" style="height:150px; overflow-y:auto; border:1px solid #eee; padding:10px; margin-bottom:10px;"></div>
+				<input id="chat-msg" style="width:70%; padding:10px" placeholder="Напишите сообщение...">
+				<button class="btn" onclick="sendMsg()">Отправить</button>
 			</div>
 		</div>
 
 		<script>
-			const cookies = document.cookie.split('; ').reduce((prev, current) => {
-				const [name, value] = current.split('=');
-				prev[name] = value;
-				return prev;
-			}, {});
+			function getCookie(name) {
+				let matches = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"));
+				return matches ? decodeURIComponent(matches[1]) : undefined;
+			}
 
-			const role = cookies['user_role'] || 'guest';
-			document.getElementById('role').innerText = '(' + role.toUpperCase() + ')';
-			if(role === 'doctor') document.getElementById('doctor-tools').style.display = 'block';
+			const email = getCookie('user_email');
+			const role = getCookie('user_role');
+			const otp = getCookie('user_otp');
 
-			function updateUI() {
-				fetch('/api/data').then(r => r.json()).then(data => {
-					document.getElementById('med-data').innerHTML = data.map(i => 
-						'<tr><td>'+i.date+'</td><td>'+i.email+'</td><td><b>'+(i.diag || 'В обработке...')+'</b></td></tr>'
+			if(email) {
+				document.getElementById('user-info').innerText = email + ' (' + role + ')';
+				if(role === 'doctor') document.getElementById('doctor-panel').style.display = 'block';
+				if(otp) {
+					document.getElementById('otp-display').style.display = 'block';
+					document.getElementById('otp-code').innerText = otp;
+				}
+			}
+
+			function refresh() {
+				fetch('/api/data').then(res => res.json()).then(data => {
+					document.getElementById('table-body').innerHTML = data.map(i => 
+						'<tr><td>'+i.date.split('T')[0]+'</td><td>'+i.email+'</td><td><b>'+(i.diag || 'На осмотре...')+'</b></td></tr>'
 					).join('');
 				});
-				fetch('/api/chat').then(r => r.json()).then(msgs => {
-					document.getElementById('chat-box').innerHTML = msgs.map(m => 
-						'<p><b>' + m.sender.split('@')[0] + ':</b> ' + m.text + '</p>'
-					).join('');
+				fetch('/api/chat').then(res => res.json()).then(data => {
+					document.getElementById('chat').innerHTML = data.map(m => '<p><b>'+m.sender.split('@')[0]+':</b> '+m.text+'</p>').join('');
 				});
 			}
 
-			function publish() {
+			function sendDiag() {
 				fetch('/api/data', {
 					method: 'POST',
-					body: JSON.stringify({email: document.getElementById('p-email').value, diagnosis: document.getElementById('p-diag').value})
-				}).then(() => { alert('Диагноз отправлен!'); updateUI(); });
+					body: JSON.stringify({email: document.getElementById('target-email').value, diagnosis: document.getElementById('diag-text').value})
+				}).then(() => { alert('Готово!'); refresh(); });
 			}
 
 			function sendMsg() {
-				const text = document.getElementById('msg-input').value;
-				fetch('/api/chat', { method: 'POST', body: JSON.stringify({text}) }).then(() => {
-					document.getElementById('msg-input').value = '';
-					updateUI();
-				});
+				fetch('/api/chat', {
+					method: 'POST',
+					body: JSON.stringify({text: document.getElementById('chat-msg').value})
+				}).then(() => { document.getElementById('chat-msg').value = ''; refresh(); });
 			}
 
-			setInterval(updateUI, 3000);
-			updateUI();
+			setInterval(refresh, 5000);
+			refresh();
 		</script>
 	</body>
 	</html>
