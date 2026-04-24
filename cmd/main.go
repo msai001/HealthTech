@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"strings" // Добавлено для корректного сравнения кода
 	"time"
 
 	_ "github.com/lib/pq"
@@ -51,7 +52,7 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("HealthOS v4.0 | SMTP Active | Port: %s", port)
+	log.Printf("HealthOS v4.5 | Fixed OTP Logic | Port: %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -60,19 +61,19 @@ func sendOTPEmail(toEmail string, code string) {
 	pass := os.Getenv("EMAIL_PASS")
 
 	if from == "" || pass == "" {
-		log.Println("Ошибка: EMAIL_USER или EMAIL_PASS не заданы в Render")
+		log.Println("Ошибка: Переменные EMAIL_USER или EMAIL_PASS не настроены на Render")
 		return
 	}
 
-	subject := "Subject: HealthOS: Код доступа\n"
+	subject := "Subject: HealthOS Verification Code\n"
 	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
-	body := fmt.Sprintf("<html><body style='font-family:sans-serif;'><h2>Ваш код: <span style='color:#2563eb'>%s</span></h2></body></html>", code)
+	body := fmt.Sprintf("<html><body style='font-family:sans-serif;'><h2>Ваш код: <span style='color:#2563eb; letter-spacing:2px;'>%s</span></h2><p>Введите его в окне подтверждения.</p></body></html>", code)
 	msg := []byte(subject + mime + body)
 
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, msg)
 	if err != nil {
-		log.Printf("Ошибка отправки почты: %v", err)
+		log.Printf("SMTP Error: %v", err)
 	}
 }
 
@@ -104,9 +105,15 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(resp.Body).Decode(&user)
 
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
-	_, _ = db.Exec(`INSERT INTO appointments (user_email, patient_name, totp_secret) 
+
+	// Обновляем OTP в базе данных
+	_, err = db.Exec(`INSERT INTO appointments (user_email, patient_name, totp_secret) 
 		VALUES ($1, $2, $3) ON CONFLICT (user_email) DO UPDATE SET totp_secret = $3`,
 		user.Email, user.Name, otp)
+
+	if err != nil {
+		log.Printf("Database Error: %v", err)
+	}
 
 	go sendOTPEmail(user.Email, otp)
 	setCookie(w, "pending_user", user.Email)
@@ -114,14 +121,13 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:100%; max-width:380px; border:1px solid #334155;">
-				<div style="font-size:50px; margin-bottom:20px;">🛡️</div>
-				<h2 style="margin:0 0 10px 0;">Двухфакторная проверка</h2>
-				<p style="color:#94a3b8; font-size:14px; line-height:1.5;">Введите код, отправленный на вашу почту.</p>
-				<form action="/verify-otp" method="POST" style="margin-top:30px;">
+			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:380px; border:1px solid #334155;">
+				<h2 style="margin-bottom:10px;">🔒 Подтверждение</h2>
+				<p style="color:#94a3b8; font-size:14px;">Мы отправили код на вашу почту</p>
+				<form action="/verify-otp" method="POST" style="margin-top:20px;">
 					<input name="otp" type="text" placeholder="000000" maxlength="6" required autofocus 
-						style="width:100%; padding:15px; font-size:32px; text-align:center; border:2px solid #334155; border-radius:12px; background:#0f172a; color:#38bdf8; letter-spacing:8px; margin-bottom:20px; outline:none;">
-					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; font-size:16px; cursor:pointer;">Подтвердить</button>
+						style="width:100%; padding:15px; font-size:32px; text-align:center; border:2px solid #334155; border-radius:12px; background:#0f172a; color:#38bdf8; letter-spacing:5px; margin-bottom:20px; outline:none;">
+					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">Войти в систему</button>
 				</form>
 			</div>
 		</body>
@@ -132,7 +138,8 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		return
 	}
-	input := r.FormValue("otp")
+
+	input := strings.TrimSpace(r.FormValue("otp"))
 	pending, err := r.Cookie("pending_user")
 	if err != nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -140,7 +147,12 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var dbOtp, name string
-	_ = db.QueryRow("SELECT totp_secret, patient_name FROM appointments WHERE user_email = $1", pending.Value).Scan(&dbOtp, &name)
+	err = db.QueryRow("SELECT totp_secret, patient_name FROM appointments WHERE user_email = $1", pending.Value).Scan(&dbOtp, &name)
+
+	dbOtp = strings.TrimSpace(dbOtp)
+
+	// ЛОГИ ДЛЯ ТЕБЯ: Проверь их в Render, если опять не пустит
+	log.Printf("VERIFY: User: %s | Input: [%s] | DB: [%s]", pending.Value, input, dbOtp)
 
 	if input == dbOtp && dbOtp != "" {
 		role := "patient"
@@ -157,7 +169,7 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte("<script>alert('Код неверный!'); history.back();</script>"))
+		w.Write([]byte("<script>alert('Неверный код! Проверьте последнее письмо.'); history.back();</script>"))
 	}
 }
 
@@ -216,66 +228,75 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Твой финальный красивый интерфейс
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 	<!DOCTYPE html>
 	<html lang="ru">
 	<head>
 		<meta charset="UTF-8">
-		<title>HealthOS | Кабинет</title>
+		<title>HealthOS | Панель управления</title>
 		<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 		<style>
 			:root { --primary: #2563eb; --dark: #0f172a; }
-			body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
+			body { font-family: 'Inter', sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
 			.sidebar { width: 280px; background: var(--dark); color: white; padding: 25px; display: flex; flex-direction: column; }
 			.main { flex: 1; padding: 40px; overflow-y: auto; }
 			.card { background: white; border-radius: 20px; padding: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 30px; }
-			.banner { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; margin-bottom: 30px; }
+			.status { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; margin-bottom: 30px; }
+			table { width: 100%; border-collapse: collapse; }
+			td { padding: 15px 0; border-top: 1px solid #f1f5f9; }
+			.badge { background: #dcfce7; color: #166534; padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 12px; }
 		</style>
 	</head>
 	<body>
 		<div class="sidebar">
-			<h2 style="color:#38bdf8;"><i class="fas fa-heart-pulse"></i> HealthOS</h2>
-			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0;">
-				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold;"></div>
+			<h2 style="color:#38bdf8;"><i class="fas fa-stethoscope"></i> HealthOS</h2>
+			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0; border:1px solid #334155;">
+				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold; margin-bottom:5px;"></div>
 				<div id="u-mail" style="font-size:13px; font-weight:bold; word-break:break-all;"></div>
 			</div>
-			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; cursor:pointer;">Выход</button>
+			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">Выход</button>
 		</div>
 		<div class="main">
 			<div id="doc-panel" class="card" style="display:none;">
-				<h3>Панель врача</h3>
-				<input id="p-mail" placeholder="Почта пациента"> <input id="p-diag" placeholder="Диагноз">
-				<button onclick="save()">ОК</button>
+				<h3>🩺 Панель врача</h3>
+				<div style="display:flex; gap:10px;">
+					<input id="p-mail" placeholder="Email пациента" style="flex:1; padding:10px; border-radius:8px; border:1px solid #ddd;">
+					<input id="p-diag" placeholder="Диагноз" style="flex:2; padding:10px; border-radius:8px; border-1px solid #ddd;">
+					<button onclick="save()" style="background:var(--primary); color:white; border:none; padding:10px 25px; border-radius:8px; cursor:pointer;">Обновить</button>
+				</div>
 			</div>
-			<div class="banner">
-				<div style="font-size:26px; font-weight:800;">ЗАСТРАХОВАН</div>
-				<div><i class="fas fa-location-dot"></i> Атырау, Поликлиника №1</div>
+			<div class="status">
+				<div style="font-size:24px; font-weight:800;">СТАТУС: ЗАСТРАХОВАН</div>
+				<div style="margin-top:10px;"><i class="fas fa-hospital"></i> Атырау, Областная больница</div>
 			</div>
 			<div class="card">
-				<h3>Журнал записей</h3>
-				<table id="list" style="width:100%;"></table>
+				<h3>📋 История посещений</h3>
+				<table id="list-body"></table>
 			</div>
 		</div>
 		<script>
 			const get = (n) => document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')?. [2];
-			document.getElementById('u-mail').innerText = get('user_email');
-			document.getElementById('u-role').innerText = get('user_role') === 'doctor' ? 'ВРАЧ' : 'ПАЦИЕНТ';
-			if(get('user_role') === 'doctor') document.getElementById('doc-panel').style.display = 'block';
+			document.getElementById('u-mail').innerText = decodeURIComponent(get('user_email'));
+			const role = get('user_role');
+			document.getElementById('u-role').innerText = role === 'doctor' ? 'ГЛАВНЫЙ ВРАЧ' : 'ПАЦИЕНТ';
+			if(role === 'doctor') document.getElementById('doc-panel').style.display = 'block';
 
 			function refresh() {
 				fetch('/api/data').then(r => r.json()).then(data => {
-					document.getElementById('list').innerHTML = data.map(d => 
-						'<tr><td>'+d.date.split('T')[0]+'</td><td>'+d.email+'</td><td>'+(d.diag || 'Ожидает')+'</td></tr>'
+					document.getElementById('list-body').innerHTML = data.map(d => 
+						'<tr><td>'+d.date.split('T')[0]+'</td><td><b>'+d.name+'</b></td><td style="text-align:right"><span class="badge">'+(d.diag || 'В обработке')+'</span></td></tr>'
 					).join('');
 				});
 			}
 			function save() {
 				const email = document.getElementById('p-mail').value;
 				const diagnosis = document.getElementById('p-diag').value;
-				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => refresh());
+				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => { alert('Данные сохранены'); refresh(); });
 			}
 			refresh();
+			setInterval(refresh, 5000);
 		</script>
 	</body>
 	</html>
