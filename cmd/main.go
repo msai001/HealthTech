@@ -46,6 +46,7 @@ func main() {
 	http.HandleFunc("/api/data", handleData)
 	http.HandleFunc("/api/chat", handleChat)
 
+	// Маршрут для смены аккаунта
 	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		cookieClear(w, "user_email")
 		cookieClear(w, "user_role")
@@ -59,7 +60,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Starting v2.1.0 - Fixed Syntax & Ultra Design")
+	log.Printf("v2.3.0 LIVE - Multi-Account System & Premium UI")
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -82,8 +83,6 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	client := googleOAuthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-
-	// Исправление: проверка ошибки перед использованием resp
 	if err != nil || resp == nil {
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
@@ -197,76 +196,72 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>HealthOS | Premium Portal</title>
+    <title>HealthOS Premium</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        :root { 
-            --primary: #0062ff; 
-            --bg: #f0f2f5; 
-            --sidebar: #111827; 
-            --glass: rgba(255, 255, 255, 0.9);
-        }
-        body { font-family: 'Inter', sans-serif; margin: 0; background: var(--bg); display: flex; height: 100vh; color: #1f2937; }
+        :root { --primary: #3b82f6; --dark: #0f172a; --bg: #f8fafc; }
+        body { font-family: 'Inter', sans-serif; margin: 0; background: var(--bg); display: flex; height: 100vh; overflow: hidden; }
         
-        /* Sidebar */
-        .sidebar { width: 280px; background: var(--sidebar); color: white; display: flex; flex-direction: column; padding: 25px; box-shadow: 4px 0 15px rgba(0,0,0,0.1); }
-        .logo { font-size: 24px; font-weight: 800; color: #3b82f6; margin-bottom: 40px; display: flex; align-items: center; gap: 10px; }
+        .sidebar { width: 320px; background: var(--dark); color: white; display: flex; flex-direction: column; padding: 25px; transition: 0.3s; }
+        .logo { font-size: 24px; font-weight: 900; background: linear-gradient(to right, #60a5fa, #2563eb); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 35px; }
         
-        .profile-card { background: #1f2937; padding: 20px; border-radius: 16px; margin-bottom: 25px; border: 1px solid #374151; }
-        .otp-display { background: #111827; color: #60a5fa; padding: 12px; border-radius: 10px; text-align: center; font-family: monospace; font-size: 20px; margin: 15px 0; border: 1px dashed #3b82f6; }
+        /* Личный кабинет */
+        .profile-area { background: #1e293b; padding: 20px; border-radius: 20px; border: 1px solid #334155; margin-bottom: 30px; }
+        .p-role { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #60a5fa; margin-bottom: 5px; font-weight: bold; }
+        .p-email { font-size: 13px; font-weight: 600; color: #f1f5f9; word-break: break-all; }
+        .p-otp { background: #0f172a; border-radius: 12px; padding: 12px; margin: 15px 0; text-align: center; font-size: 22px; font-family: monospace; color: #fff; border: 1px dashed #3b82f6; }
         
-        .nav-item { padding: 14px 18px; border-radius: 12px; color: #9ca3af; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: 0.3s; margin-bottom: 5px; }
-        .nav-item:hover, .nav-item.active { background: #2563eb; color: white; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3); }
+        .nav-link { padding: 14px 18px; border-radius: 12px; color: #94a3b8; text-decoration: none; display: flex; align-items: center; gap: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.2s; }
+        .nav-link:hover, .nav-link.active { background: var(--primary); color: white; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
 
-        /* Main */
-        .main { flex: 1; padding: 40px; overflow-y: auto; }
-        .tab-content { display: none; animation: slideUp 0.4s ease; }
-        .tab-content.active { display: block; }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .btn-logout { background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 12px; border-radius: 12px; width: 100%; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; }
+        .btn-logout:hover { background: #ef4444; color: white; }
 
-        .card { background: var(--glass); backdrop-filter: blur(10px); border-radius: 24px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.03); margin-bottom: 24px; border: 1px solid white; }
-        .card h2 { margin-top: 0; font-size: 20px; display: flex; align-items: center; gap: 10px; }
+        /* Контент */
+        .content { flex: 1; padding: 40px; overflow-y: auto; }
+        .tab { display: none; animation: fadeInUp 0.4s ease; }
+        .tab.active { display: block; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+
+        .card { background: white; border-radius: 24px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 25px; border: 1px solid #f1f5f9; }
+        .card h3 { margin: 0 0 20px 0; font-size: 18px; display: flex; align-items: center; gap: 10px; color: #1e293b; }
 
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px; color: #6b7280; font-size: 13px; text-transform: uppercase; }
-        td { padding: 16px 12px; border-top: 1px solid #e5e7eb; }
+        th { text-align: left; padding: 12px; color: #94a3b8; font-size: 12px; text-transform: uppercase; }
+        td { padding: 16px 12px; border-top: 1px solid #f1f5f9; font-size: 14px; }
 
-        .btn { padding: 12px 24px; border-radius: 12px; border: none; cursor: pointer; font-weight: 600; transition: 0.2s; display: flex; align-items: center; gap: 8px; }
-        .btn-primary { background: #2563eb; color: white; }
-        .btn-primary:hover { background: #1d4ed8; transform: translateY(-2px); }
-        .btn-danger { background: #ef4444; color: white; width: 100%; justify-content: center; }
-
-        .input-pill { background: #f9fafb; border: 1px solid #e5e7eb; padding: 12px 16px; border-radius: 12px; outline: none; width: 100%; }
-        .input-pill:focus { border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1); }
+        .input-ui { background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px 16px; border-radius: 12px; outline: none; transition: 0.2s; }
+        .input-ui:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
+        .btn-primary { background: var(--primary); color: white; border: none; padding: 12px 24px; border-radius: 12px; font-weight: bold; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="sidebar">
-        <div class="logo"><i class="fas fa-heart-pulse"></i> HealthOS</div>
+        <div class="logo"><i class="fas fa-bolt"></i> HealthTech OS</div>
         
-        <div id="auth-section">
+        <div id="profile-section">
             </div>
 
-        <nav style="margin-top:20px;">
-            <div class="nav-item active" onclick="showTab('main')"><i class="fas fa-chart-pie"></i> Обзор</div>
-            <div class="nav-item" onclick="showTab('doctors')"><i class="fas fa-stethoscope"></i> Врачи</div>
-            <div class="nav-item" onclick="showTab('billing')"><i class="fas fa-wallet"></i> Счета</div>
+        <nav>
+            <div class="nav-link active" onclick="switchTab('main')"><i class="fas fa-compass"></i> Обзор</div>
+            <div class="nav-link" onclick="switchTab('doctors')"><i class="fas fa-user-md"></i> Мои врачи</div>
+            <div class="nav-link" onclick="switchTab('bills')"><i class="fas fa-file-invoice-dollar"></i> Счета</div>
         </nav>
     </div>
 
-    <div class="main">
-        <div id="tab-main" class="tab-content active">
-            <div id="doctor-panel" class="card" style="display:none; background: #eff6ff; border-color: #bfdbfe;">
-                <h2><i class="fas fa-user-shield"></i> Режим врача</h2>
-                <div style="display:grid; grid-template-columns: 1fr 2fr auto; gap: 15px; margin-top: 15px;">
-                    <input id="p-email" class="input-pill" placeholder="Email пациента">
-                    <input id="p-diag" class="input-pill" placeholder="Диагноз / Предписание">
-                    <button class="btn btn-primary" onclick="saveData()">Обновить</button>
+    <div class="content">
+        <div id="tab-main" class="tab active">
+            <div id="doctor-controls" class="card" style="display:none; background: #f0f7ff;">
+                <h3><i class="fas fa-shield-halved"></i> Консоль доктора</h3>
+                <div style="display:grid; grid-template-columns: 1fr 2fr auto; gap: 15px;">
+                    <input id="p-email" class="input-ui" placeholder="Email пациента">
+                    <input id="p-diag" class="input-ui" placeholder="Медицинское заключение">
+                    <button class="btn-primary" onclick="saveData()">Обновить</button>
                 </div>
             </div>
 
             <div class="card">
-                <h2><i class="fas fa-list-check"></i> История обращений</h2>
+                <h3><i class="fas fa-notes-medical"></i> Журнал пациентов</h3>
                 <table>
                     <thead><tr><th>Дата</th><th>Пациент</th><th>Заключение</th></tr></thead>
                     <tbody id="data-table"></tbody>
@@ -274,75 +269,72 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
             </div>
 
             <div class="card">
-                <h2><i class="fas fa-comment-dots"></i> Онлайн консультация</h2>
-                <div id="chat-box" style="height:250px; overflow-y:auto; margin-bottom:20px; padding:10px; background:#f9fafb; border-radius:15px;"></div>
-                <div style="display:flex; gap:10px;">
-                    <input id="chat-in" class="input-pill" placeholder="Ваш вопрос...">
-                    <button class="btn btn-primary" onclick="sendMsg()"><i class="fas fa-paper-plane"></i></button>
+                <h3><i class="fas fa-comments"></i> Сообщения</h3>
+                <div id="chat-window" style="height:250px; overflow-y:auto; margin-bottom:20px; padding:15px; background:#f8fafc; border-radius:15px; line-height:1.6;"></div>
+                <div style="display:flex; gap:12px;">
+                    <input id="chat-in" class="input-ui" style="flex:1" placeholder="Ваше сообщение...">
+                    <button class="btn-primary" onclick="sendMsg()"><i class="fas fa-paper-plane"></i></button>
                 </div>
             </div>
         </div>
 
-        <div id="tab-doctors" class="tab-content">
+        <div id="tab-doctors" class="tab">
             <div class="card">
-                <h2>Мои врачи</h2>
-                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px;">
-                    <div style="text-align:center; padding:20px; border:1px solid #eee; border-radius:15px;">
-                        <i class="fas fa-user-circle fa-3x" style="color:#ddd"></i>
-                        <p><b>Махамбет Нур</b><br><small>Главврач</small></p>
+                <h3>Специалисты</h3>
+                <div style="display:flex; gap:20px; align-items:center; background:#f8fafc; padding:20px; border-radius:15px;">
+                    <i class="fas fa-user-circle fa-4x" style="color:#cbd5e1"></i>
+                    <div>
+                        <div style="font-weight:800; font-size:18px;">Махамбет Нур</div>
+                        <div style="color:#64748b;">Главный врач информационных систем</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div id="tab-billing" class="tab-content">
+        <div id="tab-bills" class="tab">
             <div class="card">
-                <h2>Финансовый кабинет (ОСМС)</h2>
-                <p>Все ваши визиты покрыты обязательным страхованием.</p>
-                <div style="padding:15px; background:#f0fdf4; color:#166534; border-radius:12px;">Статус: Задолженностей нет</div>
+                <h3>Баланс и ОСМС</h3>
+                <div style="background:#dcfce7; color:#166534; padding:25px; border-radius:20px; font-weight:bold; display:flex; align-items:center; gap:15px;">
+                    <i class="fas fa-check-circle fa-2x"></i>
+                    Ваша страховка активна. Все услуги бесплатны.
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        function showTab(name) {
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        function switchTab(name) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             document.getElementById('tab-'+name).classList.add('active');
             event.currentTarget.classList.add('active');
         }
 
-        function getC(n) {
-            let b = document.cookie.match('(^|;)\\s*' + n + '\\s*=\\s*([^;]+)');
-            return b ? decodeURIComponent(b.pop()) : "";
+        function getCookie(name) {
+            let matches = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"));
+            return matches ? decodeURIComponent(matches[1]) : undefined;
         }
 
-        const email = getC('user_email');
-        const role = getC('user_role');
-        const otp = getC('user_otp');
+        const email = getCookie('user_email');
+        const role = getCookie('user_role');
+        const otp = getCookie('user_otp');
 
-        const authBox = document.getElementById('auth-section');
+		const profileSection = document.getElementById('profile-section');
 		if(email) {
-			authBox.innerHTML = ""
-				+ "<div class=\"profile-card\">"
-				+   "<div style=\"font-size:12px; color:#9ca3af;\">" + (role === 'doctor' ? "👨‍⚕️ Администратор" : "👤 Пациент") + "</div>"
-				+   "<div style=\"font-weight:700; margin:5px 0; overflow:hidden; text-overflow:ellipsis;\">" + email + "</div>"
-				+   "<div class=\"otp-display\">" + (otp || "------") + "</div>"
-				+   "<a href=\"/logout\" class=\"btn btn-danger\" style=\"text-decoration:none;\">Выйти</a>"
-				+ "</div>";
-			if(role === 'doctor') document.getElementById('doctor-panel').style.display = 'block';
+			profileSection.innerHTML = "<div class=\"profile-area\"><div class=\"p-role\">" + (role === 'doctor' ? 'Главный врач' : 'Кабинет пациента') + "</div><div class=\"p-email\">" + email + "</div><div class=\"p-otp\">" + (otp || '000000') + "</div><button class=\"btn-logout\" onclick=\"location.href='/logout'\"><i class=\"fas fa-sync-alt\"></i> Сменить аккаунт</button></div>";
+			if(role === 'doctor') document.getElementById('doctor-controls').style.display = 'block';
 		} else {
-            authBox.innerHTML = '<a href="/api/auth/google" class="btn btn-primary" style="text-decoration:none; width:100%; justify-content:center;"><i class="fab fa-google"></i> Войти</a>';
-        }
+			profileSection.innerHTML = '<button class="btn-primary" style="width:100%; margin-bottom:30px;" onclick="location.href=\'/api/auth/google\'">Войти через Google</button>';
+		}
 
         function refresh() {
             fetch('/api/data').then(r => r.json()).then(data => {
                 document.getElementById('data-table').innerHTML = data.map(i => 
-                    '<tr><td>'+i.date.split('T')[0]+'</td><td>'+i.email+'</td><td><span style="padding:5px 10px; background:#eef2ff; border-radius:6px; font-weight:600;">'+(i.diag || 'Ожидает')+'</span></td></tr>'
+                    '<tr><td>'+i.date.split('T')[0]+'</td><td>'+i.email+'</td><td><span style="background:#f1f5f9; padding:6px 12px; border-radius:8px; font-weight:bold;">'+(i.diag || 'В очереди')+'</span></td></tr>'
                 ).join('');
             });
             fetch('/api/chat').then(r => r.json()).then(msgs => {
-                document.getElementById('chat-box').innerHTML = msgs.map(m => '<div style="margin-bottom:10px;"><b>'+m.sender.split('@')[0]+':</b> '+m.text+'</div>').join('');
+                document.getElementById('chat-window').innerHTML = msgs.map(m => '<div style="margin-bottom:8px;"><b>'+m.sender.split('@')[0]+':</b> '+m.text+'</div>').join('');
             });
         }
 
