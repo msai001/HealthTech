@@ -35,7 +35,7 @@ func main() {
 	var err error
 	db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
 	if err != nil {
-		log.Fatal("Ошибка подключения к БД:", err)
+		log.Fatal("DB Connect Error:", err)
 	}
 
 	rand.Seed(time.Now().UnixNano())
@@ -52,7 +52,7 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("HealthOS v12.0 | Deployment Atyrau | Port: %s", port)
+	log.Printf("HealthOS v13.0 | Running on port: %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -60,26 +60,27 @@ func sendOTPEmail(toEmail string, code string) {
 	from := os.Getenv("EMAIL_USER")
 	pass := os.Getenv("EMAIL_PASS")
 	if from == "" || pass == "" {
-		log.Println("ОШИБКА: EMAIL_USER или EMAIL_PASS не заданы в Render!")
+		log.Println("CRITICAL: EMAIL_USER or EMAIL_PASS is empty in Render Env")
 		return
 	}
 
-	subject := "Subject: HealthOS Verification Code\n"
-	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
-	body := fmt.Sprintf(`
-		<div style="font-family:sans-serif; padding:20px; border:2px solid #2563eb; border-radius:12px; max-width:400px; text-align:center;">
-			<h2 style="color:#2563eb;">Твой код HealthOS</h2>
-			<div style="font-size:32px; font-weight:bold; letter-spacing:5px; margin:20px 0;">%s</div>
-			<p style="color:#64748b;">Введите этот код, чтобы войти в кабинет.</p>
-		</div>`, code)
+	// Упрощенный формат письма для лучшей доставляемости
+	msg := "From: " + from + "\n" +
+		"To: " + toEmail + "\n" +
+		"Subject: HealthOS Code: " + code + "\n" +
+		"MIME-version: 1.0;\n" +
+		"Content-Type: text/html; charset=\"UTF-8\";\n\n" +
+		"<html><body><div style='border:2px solid #2563eb;padding:20px;border-radius:10px;text-align:center;'>" +
+		"<h2>Ваш код входа: <span style='color:#2563eb;'>" + code + "</span></h2>" +
+		"</div></body></html>"
 
-	msg := []byte(subject + mime + body)
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
 
-	log.Printf("DEBUG: Попытка отправки письма на %s...", toEmail)
-	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, msg)
+	log.Printf("DEBUG: Отправка письма юзеру %s...", toEmail)
+
+	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, []byte(msg))
 	if err != nil {
-		log.Printf("КРИТИЧЕСКАЯ ОШИБКА SMTP: %v", err)
+		log.Printf("!!! ОШИБКА SMTP: %v", err)
 	} else {
 		log.Printf("SUCCESS: Письмо успешно отправлено на %s", toEmail)
 	}
@@ -117,7 +118,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	_, err = db.Exec(`
 		INSERT INTO appointments (user_email, patient_name, totp_secret) 
 		VALUES ($1, $2, $3) 
-		ON CONFLICT (user_email) DO UPDATE SET totp_secret = $3, patient_name = $2`,
+		ON CONFLICT (user_email) DO UPDATE SET totp_secret = $3`,
 		user.Email, user.Name, otp)
 
 	if err == nil {
@@ -129,13 +130,13 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:360px; border:1px solid #334155;">
-				<h2 style="color:#38bdf8;">🛡️ Безопасность</h2>
-				<p style="color:#94a3b8; font-size:14px;">Код отправлен на вашу почту</p>
+			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:350px; border:1px solid #334155;">
+				<h2 style="color:#38bdf8;">Вход в кабинет</h2>
+				<p style="color:#94a3b8;">Код отправлен на ваш Email</p>
 				<form action="/verify-otp" method="POST" style="margin-top:20px;">
-					<input name="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" required autofocus 
-						style="width:100%; padding:15px; font-size:32px; text-align:center; border-radius:12px; background:#0f172a; color:#38bdf8; border:2px solid #334155; margin-bottom:20px; outline:none;">
-					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">ВОЙТИ</button>
+					<input name="otp" type="text" maxlength="6" required autofocus 
+						style="width:100%; padding:15px; font-size:32px; text-align:center; border-radius:12px; background:#0f172a; color:#38bdf8; border:2px solid #334155; margin-bottom:20px;">
+					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">ПОДТВЕРДИТЬ</button>
 				</form>
 			</div>
 		</body>
@@ -147,37 +148,26 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := strings.TrimSpace(r.FormValue("otp"))
-
-	var email string
 	pending, err := r.Cookie("pending_user")
-	if err == nil {
-		email = pending.Value
-	}
 
 	var dbOtp, name, userEmail string
-	// Ищем по куке или по самой последней записи в базе
 	query := "SELECT TRIM(totp_secret), patient_name, user_email FROM appointments "
-	if email != "" {
-		query += fmt.Sprintf("WHERE user_email = '%s'", email)
+	if err == nil {
+		query += fmt.Sprintf("WHERE user_email = '%s'", pending.Value)
 	} else {
 		query += "ORDER BY id DESC LIMIT 1"
 	}
 
 	_ = db.QueryRow(query).Scan(&dbOtp, &name, &userEmail)
 
-	log.Printf("[AUTH] Попытка: Ввод %s | База %s | Юзер %s", input, dbOtp, userEmail)
-
 	if input == dbOtp && dbOtp != "" {
 		role := "patient"
 		if userEmail == DOCTOR_EMAIL {
 			role = "doctor"
 		}
-
 		setCookie(w, "user_email", userEmail)
 		setCookie(w, "user_role", role)
 		setCookie(w, "user_name", name)
-
-		http.SetCookie(w, &http.Cookie{Name: "pending_user", MaxAge: -1, Path: "/"})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -206,9 +196,7 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 		var email, diag, date, name string
 		_ = rows.Scan(&email, &diag, &date, &name)
 		if cRole.Value == "doctor" || email == cEmail.Value {
-			list = append(list, map[string]interface{}{
-				"email": email, "diag": diag, "date": date, "name": name,
-			})
+			list = append(list, map[string]interface{}{"email": email, "diag": diag, "date": date, "name": name})
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -228,68 +216,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/api/auth/google", http.StatusSeeOther)
 		return
 	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `
-	<!DOCTYPE html>
-	<html lang="ru">
-	<head>
-		<meta charset="UTF-8">
-		<title>HealthOS | Кабинет</title>
-		<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-		<style>
-			:root { --primary: #2563eb; --dark: #0f172a; }
-			body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
-			.sidebar { width: 280px; background: var(--dark); color: white; padding: 25px; display: flex; flex-direction: column; }
-			.main { flex: 1; padding: 40px; overflow-y: auto; }
-			.card { background: white; border-radius: 20px; padding: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 30px; }
-			table { width: 100%%; border-collapse: collapse; }
-			td { padding: 15px 0; border-top: 1px solid #f1f5f9; }
-		</style>
-	</head>
-	<body>
-		<div class="sidebar">
-			<h2 style="color:#38bdf8;"><i class="fas fa-heart-pulse"></i> HealthOS</h2>
-			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0;">
-				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold;">ЗАГРУЗКА...</div>
-				<div style="font-size:13px; font-weight:bold; word-break:break-all;">%s</div>
-			</div>
-			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; cursor:pointer;">ВЫХОД</button>
-		</div>
-		<div class="main">
-			<div id="doc-panel" class="card" style="display:none;">
-				<h3>🩺 Панель врача</h3>
-				<input id="p-mail" placeholder="Email пациента"> <input id="p-diag" placeholder="Диагноз">
-				<button onclick="save()" style="background:var(--primary); color:white; border:none; padding:10px; border-radius:8px; cursor:pointer;">ОК</button>
-			</div>
-			<div class="card">
-				<h3>Журнал записей</h3>
-				<table id="list"></table>
-			</div>
-		</div>
-		<script>
-			const get = (n) => document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')?. [2];
-			const role = get('user_role');
-			document.getElementById('u-role').innerText = role === 'doctor' ? 'ГЛАВНЫЙ ВРАЧ' : 'ПАЦИЕНТ';
-			if(role === 'doctor') document.getElementById('doc-panel').style.display = 'block';
-
-			function refresh() {
-				fetch('/api/data').then(r => r.json()).then(data => {
-					document.getElementById('list').innerHTML = data.map(d => 
-						'<tr><td>'+d.date.split('T')[0]+'</td><td><b>'+d.name+'</b></td><td style="text-align:right">'+(d.diag || 'Ожидание')+'</td></tr>'
-					).join('');
-				});
-			}
-			function save() {
-				const email = document.getElementById('p-mail').value;
-				const diagnosis = document.getElementById('p-diag').value;
-				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => refresh());
-			}
-			refresh();
-		</script>
-	</body>
-	</html>
-	`, cEmail.Value)
+	fmt.Fprintf(w, "<html><body><h1>Добро пожаловать, %s</h1><a href='/logout'>Выйти</a><script>location.href='/';</script></body></html>", cEmail.Value)
 }
 
 func setCookie(w http.ResponseWriter, name, value string) {
