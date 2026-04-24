@@ -118,7 +118,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server Version 1.5.1 running on port %s", port)
+	log.Printf("Server Version 1.5.2 running on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -148,18 +148,22 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	var user struct{ Email string }
 	json.NewDecoder(resp.Body).Decode(&user)
 
+	// OTP Logic
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 	db.Exec("DELETE FROM appointments WHERE user_email = $1 AND doctor_name = 'System'", user.Email)
 	db.Exec("INSERT INTO appointments (user_email, totp_secret, doctor_name, patient_name, appointment_date) VALUES ($1, $2, 'System', 'User', '2026-01-01')", user.Email, otp)
 
 	go sendMail(user.Email, "Login Code", "Your code: "+otp)
 
+	// Установка куки
 	http.SetCookie(w, &http.Cookie{
 		Name: "user_email", Value: user.Email, Path: "/", MaxAge: 86400,
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 
-	writeJSON(w, http.StatusOK, SuccessResponse{Message: "OTP Sent", Data: map[string]string{"email": user.Email}})
+	// ИСПРАВЛЕНИЕ: Вместо JSON-ответа делаем редирект обратно на твой сайт
+	// Это вернет пользователя на фронтенд, где он сможет ввести OTP
+	http.Redirect(w, r, "https://healthtech-1.onrender.com/", http.StatusSeeOther)
 }
 
 func handleOTPVerify(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +206,6 @@ func handleAppointmentsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ИСПРАВЛЕНИЕ: Используем switch вместо if (линтер VS Code будет доволен)
 	switch r.Method {
 	case http.MethodGet:
 		rows, err := db.Query("SELECT id, doctor_name, appointment_date FROM appointments WHERE user_email = $1 AND doctor_name != 'System' ORDER BY id DESC", cEmail.Value)
@@ -283,6 +286,6 @@ func handleLegacyRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "Health Monitoring API",
 		"status":  "running",
-		"version": "1.5.1",
+		"version": "1.5.2",
 	})
 }
