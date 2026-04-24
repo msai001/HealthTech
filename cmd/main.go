@@ -52,28 +52,27 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("HealthOS v5.0 | Extreme OTP Fix | Port: %s", port)
+	log.Printf("HealthOS v7.0 | Atyrau Deployment | Port: %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func sendOTPEmail(toEmail string, code string) {
 	from := os.Getenv("EMAIL_USER")
 	pass := os.Getenv("EMAIL_PASS")
-
 	if from == "" || pass == "" {
-		log.Println("CRITICAL: EMAIL_USER or EMAIL_PASS not set in Render Environment")
+		log.Println("ОШИБКА: EMAIL_USER или EMAIL_PASS не заданы в Render")
 		return
 	}
 
-	subject := "Subject: HealthOS Verification Code\n"
+	subject := "Subject: HealthOS: Код подтверждения\n"
 	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
-	body := fmt.Sprintf("<html><body style='font-family:sans-serif;'><h2>Код подтверждения: <span style='color:#2563eb; font-size:32px;'>%s</span></h2></body></html>", code)
+	body := fmt.Sprintf("<html><body style='font-family:sans-serif;'><h2>Твой код: <span style='color:#2563eb;'>%s</span></h2></body></html>", code)
 	msg := []byte(subject + mime + body)
 
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, msg)
 	if err != nil {
-		log.Printf("SMTP Error: %v", err)
+		log.Printf("Ошибка SMTP: %v", err)
 	}
 }
 
@@ -106,32 +105,26 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-	// Сохраняем в БД, используя TRIM для предотвращения проблем с пробелами в будущем
-	_, err = db.Exec(`INSERT INTO appointments (user_email, patient_name, totp_secret) 
+	// Сначала принудительно обновляем OTP, потом отправляем
+	_, _ = db.Exec(`INSERT INTO appointments (user_email, patient_name, totp_secret) 
 		VALUES ($1, $2, $3) ON CONFLICT (user_email) DO UPDATE SET totp_secret = $3`,
 		user.Email, user.Name, otp)
 
-	if err != nil {
-		log.Printf("DB Insert Error: %v", err)
-	}
-
 	go sendOTPEmail(user.Email, otp)
 
-	cookie := &http.Cookie{Name: "pending_user", Value: user.Email, Path: "/", MaxAge: 300}
-	http.SetCookie(w, cookie)
+	http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: user.Email, Path: "/", MaxAge: 300})
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:360px; border:1px solid #334155; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);">
-				<h2 style="margin-bottom:10px;">🛡️ Проверка</h2>
-				<p style="color:#94a3b8; font-size:14px;">Введите 6 цифр из письма</p>
+			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:360px; border:1px solid #334155;">
+				<h2 style="margin-bottom:10px;">Двухфакторная проверка</h2>
+				<p style="color:#94a3b8;">Введите код из последнего письма</p>
 				<form action="/verify-otp" method="POST" style="margin-top:20px;">
-					<input name="otp" type="text" pattern="\d*" inputmode="numeric" maxlength="6" required autofocus 
+					<input name="otp" type="text" placeholder="000000" maxlength="6" required autofocus 
 						style="width:100%; padding:15px; font-size:32px; text-align:center; border:2px solid #334155; border-radius:12px; background:#0f172a; color:#38bdf8; letter-spacing:5px; margin-bottom:20px; outline:none;">
-					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer; font-size:16px;">Войти</button>
+					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">Войти</button>
 				</form>
-				<p style="font-size:11px; color:#64748b; margin-top:20px;">Не пришел код? Проверьте папку Спам.</p>
 			</div>
 		</body>
 	`)
@@ -141,31 +134,22 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		return
 	}
-
 	input := strings.TrimSpace(r.FormValue("otp"))
 	pending, err := r.Cookie("pending_user")
 	if err != nil {
-		log.Println("Cookie 'pending_user' missing")
-		http.Redirect(w, r, "/api/auth/google", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
 	var dbOtp, name string
-	err = db.QueryRow("SELECT totp_secret, patient_name FROM appointments WHERE user_email = $1", pending.Value).Scan(&dbOtp, &name)
-	if err != nil {
-		log.Printf("DB Fetch Error: %v", err)
-		http.Redirect(w, r, "/api/auth/google", http.StatusSeeOther)
-		return
-	}
+	_ = db.QueryRow("SELECT totp_secret, patient_name FROM appointments WHERE user_email = $1", pending.Value).Scan(&dbOtp, &name)
 
-	// Очищаем код из базы от любых невидимых символов/пробелов
+	// ВАЖНО: Очищаем код из базы от возможных пробелов
 	dbOtp = strings.TrimSpace(dbOtp)
 
-	// ЛОГИ - ЭТО САМОЕ ВАЖНОЕ. Проверь их в Render!
-	log.Printf("[SECURITY] Login Attempt | User: %s | Input: '%s' | DB: '%s'", pending.Value, input, dbOtp)
+	log.Printf("LOGIN ATTEMPT: %s | INPUT: [%s] | DB: [%s]", pending.Value, input, dbOtp)
 
 	if input == dbOtp && dbOtp != "" {
-		log.Printf("[SUCCESS] User %s authenticated", pending.Value)
 		role := "patient"
 		if pending.Value == DOCTOR_EMAIL {
 			role = "doctor"
@@ -175,13 +159,11 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		setCookie(w, "user_role", role)
 		setCookie(w, "user_name", name)
 
-		// Удаляем временную куку
 		http.SetCookie(w, &http.Cookie{Name: "pending_user", MaxAge: -1, Path: "/"})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	} else {
-		log.Printf("[FAILURE] OTP mismatch for %s", pending.Value)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte("<script>alert('Неверный код! Введите код из САМОГО ПОСЛЕДНЕГО письма.'); history.back();</script>"))
+		w.Write([]byte("<script>alert('Неверный код! Используйте код из самого нового письма.'); history.back();</script>"))
 	}
 }
 
@@ -189,7 +171,6 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 	cEmail, errE := r.Cookie("user_email")
 	cRole, errR := r.Cookie("user_role")
 	if errE != nil || errR != nil {
-		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
@@ -207,7 +188,10 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 	if cRole.Value == "patient" {
 		query += fmt.Sprintf(" WHERE user_email = '%s'", cEmail.Value)
 	}
-	rows, _ := db.Query(query + " ORDER BY id DESC")
+	rows, err := db.Query(query + " ORDER BY id DESC")
+	if err != nil {
+		return
+	}
 	defer rows.Close()
 
 	var list []map[string]interface{}
@@ -239,8 +223,69 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Здесь вставь свой HTML из прошлых сообщений (интерфейс HealthOS)
-	fmt.Fprintf(w, "<html><body><h1>Добро пожаловать, %s</h1><a href='/logout'>Выход</a></body></html>", cEmail.Value)
+	fmt.Fprintf(w, `
+	<!DOCTYPE html>
+	<html lang="ru">
+	<head>
+		<meta charset="UTF-8">
+		<title>HealthOS</title>
+		<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+		<style>
+			:root { --primary: #2563eb; --dark: #0f172a; }
+			body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
+			.sidebar { width: 280px; background: var(--dark); color: white; padding: 25px; display: flex; flex-direction: column; }
+			.main { flex: 1; padding: 40px; overflow-y: auto; }
+			.card { background: white; border-radius: 20px; padding: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 30px; }
+			.status { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; margin-bottom: 30px; }
+		</style>
+	</head>
+	<body>
+		<div class="sidebar">
+			<h2 style="color:#38bdf8;"><i class="fas fa-heart-pulse"></i> HealthOS</h2>
+			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0;">
+				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold;"></div>
+				<div id="u-mail" style="font-size:13px; font-weight:bold; word-break:break-all;">%s</div>
+			</div>
+			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; cursor:pointer;">Выход</button>
+		</div>
+		<div class="main">
+			<div id="doc-panel" class="card" style="display:none;">
+				<h3>Панель врача</h3>
+				<input id="p-mail" placeholder="Email пациента"> <input id="p-diag" placeholder="Диагноз">
+				<button onclick="save()">ОК</button>
+			</div>
+			<div class="status">
+				<div style="font-size:24px; font-weight:800;">СТАТУС: ЗАСТРАХОВАН</div>
+				<div><i class="fas fa-location-dot"></i> Атырау, Поликлиника №1</div>
+			</div>
+			<div class="card">
+				<h3>Журнал записей</h3>
+				<table id="list-body" style="width:100%%;"></table>
+			</div>
+		</div>
+		<script>
+			const get = (n) => document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')?. [2];
+			const role = get('user_role');
+			document.getElementById('u-role').innerText = role === 'doctor' ? 'ВРАЧ' : 'ПАЦИЕНТ';
+			if(role === 'doctor') document.getElementById('doc-panel').style.display = 'block';
+
+			function refresh() {
+				fetch('/api/data').then(r => r.json()).then(data => {
+					document.getElementById('list-body').innerHTML = data.map(d => 
+						'<tr><td>'+d.date.split('T')[0]+'</td><td>'+d.name+'</td><td>'+(d.diag || 'Ожидает')+'</td></tr>'
+					).join('');
+				});
+			}
+			function save() {
+				const email = document.getElementById('p-mail').value;
+				const diagnosis = document.getElementById('p-diag').value;
+				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => refresh());
+			}
+			refresh();
+		</script>
+	</body>
+	</html>
+	`, cEmail.Value)
 }
 
 func setCookie(w http.ResponseWriter, name, value string) {
