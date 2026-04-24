@@ -101,6 +101,12 @@ func main() {
 	initDB()
 	rand.Seed(time.Now().UnixNano())
 
+	// Инициация входа через Google
+	http.HandleFunc("/api/auth/google", func(w http.ResponseWriter, r *http.Request) {
+		url := googleOAuthConfig.AuthCodeURL("state")
+		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	})
+
 	// Auth Endpoints
 	http.HandleFunc("/api/auth/callback", corsMiddleware(handleOAuthCallback))
 	http.HandleFunc("/api/auth/verify-otp", corsMiddleware(handleOTPVerify))
@@ -111,14 +117,14 @@ func main() {
 	http.HandleFunc("/api/appointments", corsMiddleware(handleAppointmentsAPI))
 	http.HandleFunc("/api/appointments/", corsMiddleware(handleAppointmentAPI))
 
-	// Root Status
-	http.HandleFunc("/", corsMiddleware(handleLegacyRoot))
+	// Root Interface (HTML)
+	http.HandleFunc("/", handleLegacyRoot)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server Version 1.5.2 running on port %s", port)
+	log.Printf("Server Version 1.5.3 running on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -148,22 +154,19 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	var user struct{ Email string }
 	json.NewDecoder(resp.Body).Decode(&user)
 
-	// OTP Logic
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 	db.Exec("DELETE FROM appointments WHERE user_email = $1 AND doctor_name = 'System'", user.Email)
 	db.Exec("INSERT INTO appointments (user_email, totp_secret, doctor_name, patient_name, appointment_date) VALUES ($1, $2, 'System', 'User', '2026-01-01')", user.Email, otp)
 
 	go sendMail(user.Email, "Login Code", "Your code: "+otp)
 
-	// Установка куки
 	http.SetCookie(w, &http.Cookie{
 		Name: "user_email", Value: user.Email, Path: "/", MaxAge: 86400,
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 
-	// ИСПРАВЛЕНИЕ: Вместо JSON-ответа делаем редирект обратно на твой сайт
-	// Это вернет пользователя на фронтенд, где он сможет ввести OTP
-	http.Redirect(w, r, "https://healthtech-1.onrender.com/", http.StatusSeeOther)
+	// Возвращаем пользователя на главную страницу
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func handleOTPVerify(w http.ResponseWriter, r *http.Request) {
@@ -283,9 +286,31 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLegacyRoot(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"message": "Health Monitoring API",
-		"status":  "running",
-		"version": "1.5.2",
-	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, `
+		<!DOCTYPE html>
+		<html lang="ru">
+		<head>
+			<meta charset="UTF-8">
+			<title>Health Monitoring System</title>
+			<style>
+				body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+				.card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
+				h1 { color: #2c3e50; margin-bottom: 10px; }
+				p { color: #7f8c8d; margin-bottom: 30px; }
+				.btn-google { background: #4285F4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-flex; align-items: center; transition: background 0.3s; }
+				.btn-google:hover { background: #357ae8; }
+				.status { margin-top: 20px; font-size: 0.8em; color: #bdc3c7; }
+			</style>
+		</head>
+		<body>
+			<div class="card">
+				<h1>Health Monitoring</h1>
+				<p>Добро пожаловать в систему мониторинга здоровья.</p>
+				<a href="/api/auth/google" class="btn-google">Войти через Google</a>
+				<div class="status">Backend v1.5.3 | Status: Running</div>
+			</div>
+		</body>
+		</html>
+	`)
 }
