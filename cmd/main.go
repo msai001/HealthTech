@@ -51,30 +51,28 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("HealthOS v3.6 | Production SMTP | Port: %s", port)
+	log.Printf("HealthOS v4.0 | SMTP Active | Port: %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func sendOTPEmail(toEmail string, code string) {
-	// Берем данные из переменных окружения Render
 	from := os.Getenv("EMAIL_USER")
 	pass := os.Getenv("EMAIL_PASS")
 
 	if from == "" || pass == "" {
-		log.Println("Ошибка: EMAIL_USER или EMAIL_PASS не настроены в Render")
+		log.Println("Ошибка: EMAIL_USER или EMAIL_PASS не заданы в Render")
 		return
 	}
 
-	subject := "Subject: HealthOS: Код подтверждения\n"
+	subject := "Subject: HealthOS: Код доступа\n"
 	mime := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";\n\n"
-	body := fmt.Sprintf("<html><body><h2>Ваш код: <span style='color:#2563eb'>%s</span></h2><p>Введите его для входа в систему.</p></body></html>", code)
+	body := fmt.Sprintf("<html><body style='font-family:sans-serif;'><h2>Ваш код: <span style='color:#2563eb'>%s</span></h2></body></html>", code)
 	msg := []byte(subject + mime + body)
 
 	auth := smtp.PlainAuth("", from, pass, "smtp.gmail.com")
 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, msg)
-
 	if err != nil {
-		log.Printf("SMTP Error: %v", err)
+		log.Printf("Ошибка отправки почты: %v", err)
 	}
 }
 
@@ -106,26 +104,24 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(resp.Body).Decode(&user)
 
 	otp := fmt.Sprintf("%06d", rand.Intn(1000000))
-
 	_, _ = db.Exec(`INSERT INTO appointments (user_email, patient_name, totp_secret) 
 		VALUES ($1, $2, $3) ON CONFLICT (user_email) DO UPDATE SET totp_secret = $3`,
 		user.Email, user.Name, otp)
 
 	go sendOTPEmail(user.Email, otp)
-
 	setCookie(w, "pending_user", user.Email)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:380px; border:1px solid #334155;">
-				<div style="font-size:40px; margin-bottom:10px;">🛡️</div>
-				<h2>Проверка безопасности</h2>
-				<p style="color:#94a3b8;">Код отправлен на ваш Email</p>
-				<form action="/verify-otp" method="POST" style="margin-top:20px;">
+			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:100%; max-width:380px; border:1px solid #334155;">
+				<div style="font-size:50px; margin-bottom:20px;">🛡️</div>
+				<h2 style="margin:0 0 10px 0;">Двухфакторная проверка</h2>
+				<p style="color:#94a3b8; font-size:14px; line-height:1.5;">Введите код, отправленный на вашу почту.</p>
+				<form action="/verify-otp" method="POST" style="margin-top:30px;">
 					<input name="otp" type="text" placeholder="000000" maxlength="6" required autofocus 
-						style="width:100%; padding:15px; font-size:32px; text-align:center; border:2px solid #334155; border-radius:12px; background:#0f172a; color:#38bdf8; margin-bottom:20px; outline:none;">
-					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer; font-size:16px;">Продолжить</button>
+						style="width:100%; padding:15px; font-size:32px; text-align:center; border:2px solid #334155; border-radius:12px; background:#0f172a; color:#38bdf8; letter-spacing:8px; margin-bottom:20px; outline:none;">
+					<button type="submit" style="width:100%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; font-size:16px; cursor:pointer;">Подтвердить</button>
 				</form>
 			</div>
 		</body>
@@ -220,7 +216,6 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Здесь твой готовый интерфейс из image_984459.png
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `
 	<!DOCTYPE html>
@@ -230,73 +225,57 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		<title>HealthOS | Кабинет</title>
 		<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 		<style>
-			:root { --primary: #2563eb; --dark: #0f172a; --sidebar: #1e293b; }
-			body { font-family: 'Inter', sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
+			:root { --primary: #2563eb; --dark: #0f172a; }
+			body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; background: #f8fafc; }
 			.sidebar { width: 280px; background: var(--dark); color: white; padding: 25px; display: flex; flex-direction: column; }
 			.main { flex: 1; padding: 40px; overflow-y: auto; }
-			.nav-item { padding: 12px 15px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; gap: 12px; margin-bottom: 5px; color: #94a3b8; transition: 0.3s; }
-			.nav-item.active { background: var(--primary); color: white; }
 			.card { background: white; border-radius: 20px; padding: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 30px; }
-			.status-banner { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; margin-bottom: 30px; }
-			table { width: 100%; border-collapse: collapse; }
-			td { padding: 15px 0; border-top: 1px solid #f1f5f9; }
-			.badge { background: #f0fdf4; color: #166534; padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 12px; }
+			.banner { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; padding: 25px; border-radius: 20px; margin-bottom: 30px; }
 		</style>
 	</head>
 	<body>
 		<div class="sidebar">
-			<h2 style="color:#38bdf8; display:flex; align-items:center; gap:10px;"><i class="fas fa-heart-pulse"></i> HealthOS</h2>
-			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0; border:1px solid #334155;">
-				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold; margin-bottom:5px;"></div>
+			<h2 style="color:#38bdf8;"><i class="fas fa-heart-pulse"></i> HealthOS</h2>
+			<div style="background:#1e293b; padding:15px; border-radius:15px; margin:20px 0;">
+				<div id="u-role" style="font-size:10px; color:#38bdf8; font-weight:bold;"></div>
 				<div id="u-mail" style="font-size:13px; font-weight:bold; word-break:break-all;"></div>
-				<div id="u-otp" style="margin-top:15px; background:#0f172a; padding:10px; border-radius:8px; text-align:center; color:#38bdf8; font-family:monospace; font-size:18px; border:1px dashed #2563eb;"></div>
 			</div>
-			<div class="nav-item active"><i class="fas fa-house"></i> Главная</div>
-			<div class="nav-item"><i class="fas fa-file-medical"></i> Медкарта</div>
-			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">Выход</button>
+			<button onclick="location.href='/logout'" style="margin-top:auto; background:#ef4444; color:white; border:none; padding:15px; border-radius:12px; cursor:pointer;">Выход</button>
 		</div>
 		<div class="main">
-			<div id="doc-panel" class="card" style="display:none; border-top: 5px solid #f59e0b;">
-				<h3 style="margin-top:0">Панель управления врача</h3>
-				<div style="display:flex; gap:15px;">
-					<input id="p-mail" placeholder="Почта пациента" style="flex:1; padding:12px; border-radius:10px; border:1px solid #ddd;">
-					<input id="p-diag" placeholder="Диагноз" style="flex:2; padding:12px; border-radius:10px; border:1px solid #ddd;">
-					<button onclick="save()" style="background:var(--primary); color:white; border:none; padding:0 30px; border-radius:10px; font-weight:bold; cursor:pointer;">ОК</button>
-				</div>
+			<div id="doc-panel" class="card" style="display:none;">
+				<h3>Панель врача</h3>
+				<input id="p-mail" placeholder="Почта пациента"> <input id="p-diag" placeholder="Диагноз">
+				<button onclick="save()">ОК</button>
 			</div>
-			<div class="status-banner">
-				<div style="font-size:12px; opacity:0.8;">СТАТУС ОСМС</div>
+			<div class="banner">
 				<div style="font-size:26px; font-weight:800;">ЗАСТРАХОВАН</div>
-				<div style="margin-top:10px;"><i class="fas fa-location-dot"></i> Атырау, Поликлиника №1</div>
+				<div><i class="fas fa-location-dot"></i> Атырау, Поликлиника №1</div>
 			</div>
 			<div class="card">
-				<h3><i class="fas fa-history"></i> Журнал записей</h3>
-				<table><tbody id="list"></tbody></table>
+				<h3>Журнал записей</h3>
+				<table id="list" style="width:100%;"></table>
 			</div>
 		</div>
 		<script>
 			const get = (n) => document.cookie.match('(^|;) ?'+n+'=([^;]*)(;|$)')?. [2];
-			const email = get('user_email'), role = get('user_role'), otp = get('user_otp');
-			
-			document.getElementById('u-mail').innerText = email;
-			document.getElementById('u-role').innerText = role === 'doctor' ? 'ВРАЧ' : 'ПАЦИЕНТ';
-			document.getElementById('u-otp').innerText = otp;
-			if(role === 'doctor') document.getElementById('doc-panel').style.display = 'block';
+			document.getElementById('u-mail').innerText = get('user_email');
+			document.getElementById('u-role').innerText = get('user_role') === 'doctor' ? 'ВРАЧ' : 'ПАЦИЕНТ';
+			if(get('user_role') === 'doctor') document.getElementById('doc-panel').style.display = 'block';
 
 			function refresh() {
 				fetch('/api/data').then(r => r.json()).then(data => {
 					document.getElementById('list').innerHTML = data.map(d => 
-						'<tr><td>'+d.date.split('T')[0]+'</td><td><b>'+d.name+'</b></td><td style="text-align:right"><span class="badge">'+(d.diag || 'Ожидает')+'</span></td></tr>'
+						'<tr><td>'+d.date.split('T')[0]+'</td><td>'+d.email+'</td><td>'+(d.diag || 'Ожидает')+'</td></tr>'
 					).join('');
 				});
 			}
 			function save() {
 				const email = document.getElementById('p-mail').value;
 				const diagnosis = document.getElementById('p-diag').value;
-				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => { alert('Обновлено'); refresh(); });
+				fetch('/api/data', {method:'POST', body: JSON.stringify({email, diagnosis})}).then(() => refresh());
 			}
 			refresh();
-			setInterval(refresh, 5000);
 		</script>
 	</body>
 	</html>
