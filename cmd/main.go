@@ -39,7 +39,7 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 
-	// Запуск Telegram-бота в отдельном потоке
+	// Запуск Telegram-бота в фоне
 	go startTelegramBot()
 
 	http.HandleFunc("/api/auth/google", handleLogin)
@@ -54,24 +54,24 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("HealthOS v18.0 | Система запущена на порту: %s", port)
+	log.Printf("HealthOS v19.0 | Фикс привязки кода | Порт: %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// --- ЛОГИКА ТЕЛЕГРАМ-БОТА ---
+// --- УЛУЧШЕННЫЙ БОТ ---
 func startTelegramBot() {
 	token := os.Getenv("TELEGRAM_APITOKEN")
 	if token == "" {
-		log.Println("Ошибка: TELEGRAM_APITOKEN не найден в окружении")
+		log.Println("ОШИБКА: Токен ТГ не установлен")
 		return
 	}
 	apiURL := "https://api.telegram.org/bot" + token + "/"
 	offset := 0
 
 	for {
-		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=10", apiURL, offset))
+		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=15", apiURL, offset))
 		if err != nil || resp == nil {
-			time.Sleep(5 * time.Second)
+			time.Sleep(3 * time.Second)
 			continue
 		}
 
@@ -92,17 +92,29 @@ func startTelegramBot() {
 			if strings.HasPrefix(u.Message.Text, "/start") {
 				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-				// Обновляем код для самой последней записи (той, что создалась при входе через Google)
-				res, err := db.Exec("UPDATE appointments SET totp_secret = $1 WHERE id = (SELECT id FROM appointments ORDER BY id DESC LIMIT 1)", code)
+				// ОБНОВЛЕННЫЙ SQL: Ищем последнюю запись, где код пустой
+				res, err := db.Exec(`
+					UPDATE appointments 
+					SET totp_secret = $1 
+					WHERE id = (
+						SELECT id FROM appointments 
+						WHERE totp_secret IS NULL OR totp_secret = '' 
+						ORDER BY id DESC LIMIT 1
+					)`, code)
 
 				if err != nil {
-					log.Printf("[TG ERROR] Не удалось обновить БД: %v", err)
+					log.Printf("[TG ERROR] Ошибка при записи кода: %v", err)
 				}
 
 				rows, _ := res.RowsAffected()
-				log.Printf("[TG] Код %s сгенерирован. Обновлено строк в базе: %d", code, rows)
+				// Если не нашли пустых, обновляем вообще последнюю запись
+				if rows == 0 {
+					db.Exec("UPDATE appointments SET totp_secret = $1 WHERE id = (SELECT max(id) FROM appointments)", code)
+					log.Printf("[TG] Обновлена последняя существующая запись.")
+				}
 
-				msg := "Ваш код подтверждения HealthOS: " + code
+				log.Printf("[TG] Код %s отправлен пользователю %d", code, u.Message.Chat.ID)
+				msg := "Твой код доступа HealthOS: " + code
 				http.Get(apiURL + "sendMessage?chat_id=" + fmt.Sprint(u.Message.Chat.ID) + "&text=" + msg)
 			}
 			offset = u.UpdateID + 1
@@ -110,25 +122,24 @@ func startTelegramBot() {
 	}
 }
 
-// --- СТРАНИЦА ВХОДА ---
+// --- ВХОД ---
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `
+	// Ссылка на бота внизу — не забудь заменить на свой ник!
+	botName := "HwalthOS_Auth_Bot"
+	fmt.Fprintf(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:350px; border:1px solid #334155;">
+			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:350px;">
 				<h1 style="color:#38bdf8;">HealthOS</h1>
-				<p style="color:#94a3b8; margin-bottom:30px;">Авторизация в системе</p>
-				<a href="`+googleOAuthConfig.AuthCodeURL("state")+`" 
-				   style="display:block; background:white; color:#0f172a; padding:15px; border-radius:12px; text-decoration:none; font-weight:bold; margin-bottom:15px;">
+				<a href="%s" style="display:block; background:white; color:#0f172a; padding:15px; border-radius:12px; text-decoration:none; font-weight:bold; margin-bottom:20px;">
 				   Войти через Google
 				</a>
-				<p style="font-size:12px; color:#64748b;">После входа напишите /start нашему боту в Telegram: <br>
-				<a href="https://t.me/ТВОЙ_БОТ_БЕЗ_СОБАЧКИ" style="color:#38bdf8;">@ТВОЙ_БОТ_БЕЗ_СОБАЧКИ</a></p>
+				<p style="font-size:12px; color:#64748b;">После нажатия кнопки напишите /start боту:<br>
+				<a href="https://t.me/%s" style="color:#38bdf8; text-decoration:none;">@%s</a></p>
 			</div>
-		</body>`)
+		</body>`, googleOAuthConfig.AuthCodeURL("state"), botName, botName)
 }
 
-// --- CALLBACK ПОСЛЕ GOOGLE ---
 func handleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	token, err := googleOAuthConfig.Exchange(context.Background(), code)
@@ -148,24 +159,23 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	var user struct{ Email, Name string }
 	json.NewDecoder(resp.Body).Decode(&user)
 
-	// Создаем или обновляем запись пользователя (код пока пустой)
-	db.Exec("INSERT INTO appointments (user_email, patient_name) VALUES ($1, $2) ON CONFLICT (user_email) DO UPDATE SET patient_name = $2", user.Email, user.Name)
+	// Создаем запись БЕЗ кода (код добавит бот)
+	db.Exec("INSERT INTO appointments (user_email, patient_name, totp_secret) VALUES ($1, $2, '') ON CONFLICT (user_email) DO UPDATE SET patient_name = $2, totp_secret = ''", user.Email, user.Name)
 
 	http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: user.Email, Path: "/", MaxAge: 600})
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `
+	fmt.Fprint(w, `
 		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; color:white; margin:0;">
 			<form action="/verify-otp" method="POST" style="background:#1e293b; padding:40px; border-radius:24px; text-align:center;">
-				<h2>Введите код</h2>
-				<p style="color:#94a3b8;">Получите код в Telegram-боте</p>
+				<h2>Введите код из Telegram</h2>
 				<input name="otp" type="text" maxlength="6" required autofocus style="width:100%%; padding:15px; font-size:32px; text-align:center; border-radius:12px; margin-bottom:20px; border:none; background:#0f172a; color:#38bdf8;">
-				<button type="submit" style="width:100%%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">ПОДТВЕРДИТЬ</button>
+				<button type="submit" style="width:100%%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold;">ВОЙТИ</button>
 			</form>
 		</body>`)
 }
 
-// --- ПРОВЕРКА КОДА ---
+// --- ПРОВЕРКА ---
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	input := strings.TrimSpace(r.FormValue("otp"))
 	pending, err := r.Cookie("pending_user")
@@ -178,21 +188,16 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		query += "ORDER BY id DESC LIMIT 1 "
 	}
 
-	err = db.QueryRow(query).Scan(&dbOtp, &name, &email)
-
-	log.Printf("[AUTH] Сверка: Ввод='%s', База='%s'", input, dbOtp)
+	db.QueryRow(query).Scan(&dbOtp, &name, &email)
 
 	if input != "" && input == dbOtp {
 		role := "patient"
 		if email == DOCTOR_EMAIL {
 			role = "doctor"
 		}
-
 		setCookie(w, "user_email", email)
 		setCookie(w, "user_role", role)
 		setCookie(w, "user_name", name)
-
-		http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: "", Path: "/", MaxAge: -1})
 		http.Redirect(w, r, "/", 302)
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -200,21 +205,19 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- ЛОГИКА ДАННЫХ И КАБИНЕТА ---
+// --- ОСТАЛЬНОЕ ---
 func handleData(w http.ResponseWriter, r *http.Request) {
 	cEmail, _ := r.Cookie("user_email")
 	cRole, _ := r.Cookie("user_role")
 	if cEmail == nil {
 		return
 	}
-
 	if r.Method == "POST" && cRole.Value == "doctor" {
 		var req struct{ Email, Diagnosis string }
 		json.NewDecoder(r.Body).Decode(&req)
 		db.Exec("UPDATE appointments SET diagnosis = $1 WHERE user_email = $2", req.Diagnosis, req.Email)
 		return
 	}
-
 	rows, _ := db.Query("SELECT user_email, diagnosis, appointment_date, patient_name FROM appointments ORDER BY id DESC")
 	defer rows.Close()
 	var list []map[string]string
@@ -225,7 +228,6 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 			list = append(list, map[string]string{"email": e, "diag": d, "date": dt, "name": n})
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(list)
 }
 
@@ -237,20 +239,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<html><body style="font-family:sans-serif; background:#f1f5f9; padding:40px;">
-		<div style="max-width:800px; margin:auto; background:white; padding:30px; border-radius:20px; box-shadow:0 10px 25px rgba(0,0,0,0.05);">
-			<h1>Кабинет HealthOS</h1>
-			<p>Добро пожаловать, <b>%s</b></p>
-			<hr>
-			<div id="data">Загрузка данных...</div>
-			<br>
-			<button onclick="location.href='/logout'" style="background:#ef4444; color:white; border:none; padding:10px 20px; border-radius:8px; cursor:pointer;">Выйти</button>
-		</div>
-		<script>
-			fetch('/api/data').then(r=>r.json()).then(d => {
-				document.getElementById('data').innerHTML = '<h3>Ваши обследования:</h3>' + 
-				d.map(i => '<div style="padding:10px; border-bottom:11px solid #eee;"><b>'+i.date.split('T')[0]+'</b>: '+(i.diag || 'В обработке...')+'</div>').join('');
-			})
-		</script>
+		<h1>HealthOS</h1><p>Юзер: <b>%s</b></p>
+		<div id="d"></div><button onclick="location.href='/logout'">Выйти</button>
+		<script>fetch('/api/data').then(r=>r.json()).then(data=>document.getElementById('d').innerHTML=data.map(i=>'<p>'+i.date.split('T')[0]+': '+i.name+' - '+(i.diag||'...')+'</p>').join(''))</script>
 	</body></html>`, cEmail.Value)
 }
 
