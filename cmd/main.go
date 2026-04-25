@@ -58,11 +58,9 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// --- ТЕЛЕГРАМ БОТ ---
 func startTelegramBot() {
 	token := os.Getenv("TELEGRAM_APITOKEN")
 	if token == "" {
-		log.Println("ОШИБКА: Токен ТГ не установлен")
 		return
 	}
 	apiURL := "https://api.telegram.org/bot" + token + "/"
@@ -92,21 +90,24 @@ func startTelegramBot() {
 			if strings.HasPrefix(u.Message.Text, "/start") {
 				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-				// ОБНОВЛЕНИЕ: Принудительно вставляем код в последнюю созданную строку
-				// Мы используем подзапрос, чтобы найти ID последней записи
+				// Ищем запись, где Email заполнен, а код — нет (свежий вход)
 				res, err := db.Exec(`
 					UPDATE appointments 
 					SET totp_secret = $1 
-					WHERE id = (SELECT id FROM appointments ORDER BY id DESC LIMIT 1)`, code)
+					WHERE id = (
+						SELECT id FROM appointments 
+						WHERE totp_secret IS NULL OR totp_secret = '' 
+						ORDER BY id DESC LIMIT 1
+					)`, code)
 
 				if err != nil {
-					log.Printf("[TG ERROR] Ошибка UPDATE: %v", err)
+					log.Printf("Ошибка БД: %v", err)
 				}
 
 				rows, _ := res.RowsAffected()
-				log.Printf("[TG] Код %s создан. Обновлено строк: %d. Чат: %d", code, rows, u.Message.Chat.ID)
+				log.Printf("[TG] Сгенерирован код %s. Обновлено строк: %d", code, rows)
 
-				msg := "Твой код доступа HealthOS: " + code
+				msg := "Код для входа: " + code
 				http.Get(apiURL + "sendMessage?chat_id=" + fmt.Sprint(u.Message.Chat.ID) + "&text=" + msg)
 			}
 			offset = u.UpdateID + 1
