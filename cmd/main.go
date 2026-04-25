@@ -160,34 +160,49 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
-	input := strings.TrimSpace(r.FormValue("otp"))
-	pending, err := r.Cookie("pending_user")
-	var dbOtp, name, email string
-
-	query := "SELECT TRIM(totp_secret), patient_name, user_email FROM appointments "
-	if err == nil {
-		query += fmt.Sprintf("WHERE user_email = '%s'", pending.Value)
-	} else {
-		query += "ORDER BY id DESC LIMIT 1"
+	if r.Method != "POST" {
+		http.Redirect(w, r, "/", 302)
+		return
 	}
 
-	db.QueryRow(query).Scan(&dbOtp, &name, &email)
+	input := strings.TrimSpace(r.FormValue("otp"))
+	pending, err := r.Cookie("pending_user")
 
-	if input == dbOtp && dbOtp != "" {
+	var dbOtp, name, email string
+	// Используем TRIM(totp_secret), чтобы убрать лишние пробелы из базы данных
+	query := "SELECT TRIM(totp_secret), patient_name, user_email FROM appointments "
+
+	if err == nil && pending.Value != "" {
+		query += fmt.Sprintf("WHERE user_email = '%s' ", pending.Value)
+	} else {
+		query += "ORDER BY id DESC LIMIT 1 "
+	}
+
+	err = db.QueryRow(query).Scan(&dbOtp, &name, &email)
+
+	// Логируем для отладки в Render
+	log.Printf("[AUTH] Ввод: '%s' | В базе: '%s' | Юзер: %s", input, dbOtp, email)
+
+	if input != "" && input == dbOtp {
 		role := "patient"
 		if email == DOCTOR_EMAIL {
 			role = "doctor"
 		}
+
 		setCookie(w, "user_email", email)
 		setCookie(w, "user_role", role)
 		setCookie(w, "user_name", name)
+
+		// Удаляем временную куку
+		http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: "", Path: "/", MaxAge: -1})
+
 		http.Redirect(w, r, "/", 302)
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte("<script>alert('Неверный код!'); history.back();</script>"))
+		// Если код неверный, покажем в алерте, что именно ожидает система (для теста)
+		w.Write([]byte(fmt.Sprintf("<script>alert('Ошибка! Введено: %s, Ожидалось: %s'); history.back();</script>", input, dbOtp)))
 	}
 }
-
 func handleData(w http.ResponseWriter, r *http.Request) {
 	cEmail, _ := r.Cookie("user_email")
 	cRole, _ := r.Cookie("user_role")
