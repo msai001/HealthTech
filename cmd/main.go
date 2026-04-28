@@ -92,10 +92,7 @@ func startTelegramBot() {
 			if strings.HasPrefix(u.Message.Text, "/start") {
 				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-				res, err := db.Exec(`
-					UPDATE appointments 
-					SET totp_secret = $1 
-					WHERE id = (SELECT id FROM appointments ORDER BY id DESC LIMIT 1)`, code)
+				res, err := db.Exec(`INSERT INTO appointments (totp_secret) VALUES ($1)`, code)
 
 				if err != nil {
 					log.Printf("[TG ERROR] Ошибка БД: %v", err)
@@ -186,6 +183,7 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db.QueryRow(query).Scan(&dbOtp, &name, &email)
+	log.Printf("[debug] dbOtp : %v", dbOtp)
 
 	if input != "" && input == dbOtp {
 		role := "patient"
@@ -199,7 +197,7 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", 302)
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(fmt.Sprintf("<script>alert('Ошибка! Введено: %s, Ожидалось в базе: %s'); history.back();</script>", input, dbOtp)))
+		w.Write([]byte(fmt.Sprintf("<script>alert('Ошибка! Введено: %s, Ожидалось в базе: Makha lox %s'); history.back();</script>", input, dbOtp)))
 	}
 }
 
