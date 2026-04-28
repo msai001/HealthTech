@@ -92,8 +92,9 @@ func startTelegramBot() {
 			if strings.HasPrefix(u.Message.Text, "/start") {
 				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-				res, err := db.Exec(`INSERT INTO appointments (totp_secret, patient_name, appointment_date, doctor_name, user_email) 
-					VALUES ($1, $2, $3, $4, $5)`, code, "", time.Now(), "Dr. Smith", "")
+				// res, err := db.Exec(`INSERT INTO appointments (totp_secret, patient_name, appointment_date, doctor_name, user_email)
+				// 	VALUES ($1, $2, $3, $4, $5)`, code, "", time.Now(), "Dr. Smith", "")
+				res, err := db.Exec(`UPDATE appointments SET totp_secret = $1 WHERE user_email = (SELECT user_email FROM appointments ORDER BY id DESC LIMIT 1)`, code)
 
 				if err != nil {
 					log.Printf("[TG ERROR] Ошибка БД: %v", err)
