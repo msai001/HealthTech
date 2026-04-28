@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,63 +12,65 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
-const DOCTOR_EMAIL = "nur.mahambet2005@gmail.com"
+// !!! ОБЯЗАТЕЛЬНО ЗАМЕНИ ЭТИ ДАННЫЕ !!!
+const MY_TG_ID = 1739738363                               // Твой ID из @userinfobot
+const BOT_LINK = "https://web.telegram.org/a/#8665739584" // Ссылка на твоего бота
 
-var (
-	db                *sql.DB
-	googleOAuthConfig = &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  "https://healthtech-1.onrender.com/callback",
-		Scopes:       []string{"openid", "email", "profile"},
-		Endpoint:     google.Endpoint,
-	}
-)
+var db *sql.DB
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	var err error
-	db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	dbURL := os.Getenv("DATABASE_URL")
+	db, err = sql.Open("postgres", dbURL)
 	if err != nil {
-		log.Fatal("Критическая ошибка БД:", err)
+		log.Fatal("Ошибка подключения к БД:", err)
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	// Пересоздаем таблицу, чтобы старые колонки от Google не мешали
+	log.Println("[DB] Инициализация новой структуры таблицы...")
+	_, err = db.Exec(`
+		DROP TABLE IF EXISTS appointments;
+		CREATE TABLE appointments (
+			id SERIAL PRIMARY KEY,
+			tg_id BIGINT UNIQUE,
+			patient_name TEXT,
+			totp_secret TEXT,
+			user_role TEXT DEFAULT 'patient'
+		)`)
+	if err != nil {
+		log.Fatal("Ошибка создания таблицы:", err)
+	}
 
 	go startTelegramBot()
 
-	http.HandleFunc("/api/auth/google", handleLogin)
-	http.HandleFunc("/callback", handleCallback)
-	http.HandleFunc("/verify-otp", handleVerifyOTP)
-	http.HandleFunc("/api/data", handleData)
-	http.HandleFunc("/logout", handleLogout)
 	http.HandleFunc("/", handleRoot)
-
-	// НОВЫЙ МАРШРУТ: СЕКРЕТНЫЙ РЕНТГЕН БАЗЫ
+	http.HandleFunc("/verify-otp", handleVerifyOTP)
+	http.HandleFunc("/logout", handleLogout)
 	http.HandleFunc("/debug", handleDebug)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
-	log.Printf("HealthOS v21.0 | Fix SQL & Debugger | Порт: %s", port)
+	log.Printf("[SERVER] Запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func startTelegramBot() {
 	token := os.Getenv("TELEGRAM_APITOKEN")
 	if token == "" {
+		log.Println("[TG ERROR] Токен бота не найден в переменных окружения!")
 		return
 	}
 	apiURL := "https://api.telegram.org/bot" + token + "/"
+	log.Println("[TG] Бот запущен и слушает обновления...")
 	offset := 0
 
 	for {
-		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=15", apiURL, offset))
+		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=20", apiURL, offset))
 		if err != nil || resp == nil {
 			time.Sleep(3 * time.Second)
 			continue
@@ -80,8 +81,11 @@ func startTelegramBot() {
 			Result []struct {
 				UpdateID int `json:"update_id"`
 				Message  struct {
-					Chat struct{ ID int } `json:"chat"`
-					Text string           `json:"text"`
+					Chat struct{ ID int64 } `json:"chat"`
+					Text string             `json:"text"`
+					From struct {
+						FirstName string `json:"first_name"`
+					} `json:"from"`
 				} `json:"message"`
 			} `json:"result"`
 		}
@@ -91,186 +95,110 @@ func startTelegramBot() {
 		for _, u := range updates.Result {
 			if strings.HasPrefix(u.Message.Text, "/start") {
 				code := fmt.Sprintf("%06d", rand.Intn(1000000))
+				tgID := u.Message.Chat.ID
+				name := u.Message.From.FirstName
 
-				// res, err := db.Exec(`INSERT INTO appointments (totp_secret, patient_name, appointment_date, doctor_name, user_email)
-				// 	VALUES ($1, $2, $3, $4, $5)`, code, "", time.Now(), "Dr. Smith", "")
-				res, err := db.Exec(`UPDATE appointments SET totp_secret = $1 WHERE user_email = (SELECT user_email FROM appointments ORDER BY id DESC LIMIT 1)`, code)
+				log.Printf("[TG] Сообщение от %s (ID: %d). Генерирую код...", name, tgID)
+
+				_, err := db.Exec(`
+					INSERT INTO appointments (tg_id, patient_name, totp_secret) 
+					VALUES ($1, $2, $3)
+					ON CONFLICT (tg_id) DO UPDATE SET totp_secret = $3`,
+					tgID, name, code)
 
 				if err != nil {
-					log.Printf("[TG ERROR] Ошибка БД: %v", err)
+					log.Printf("[TG ERROR] Не удалось сохранить код в БД: %v", err)
+					msg := "Ошибка сервера. Попробуй позже."
+					http.Get(apiURL + "sendMessage?chat_id=" + fmt.Sprint(tgID) + "&text=" + msg)
+				} else {
+					msg := fmt.Sprintf("Твой секретный код: %s", code)
+					http.Get(apiURL + "sendMessage?chat_id=" + fmt.Sprint(tgID) + "&text=" + msg)
+					log.Printf("[TG] Код %s успешно отправлен пользователю %d", code, tgID)
 				}
-
-				rows, _ := res.RowsAffected()
-				log.Printf("[TG] Сгенерирован код %s. Обновлено строк: %d", code, rows)
-
-				http.Get(apiURL + "sendMessage?chat_id=" + fmt.Sprint(u.Message.Chat.ID) + "&text=Твой код HealthOS: " + code)
 			}
 			offset = u.UpdateID + 1
 		}
 	}
 }
 
-func handleLogin(w http.ResponseWriter, r *http.Request) {
+func handleRoot(w http.ResponseWriter, r *http.Request) {
+	cID, _ := r.Cookie("user_id")
+	if cID == nil || cID.Value == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `
+			<body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+				<h1>HealthOS</h1>
+				<p>Авторизация через защищенный канал Telegram</p>
+				<a href="%s" target="_blank" style="display:inline-block; padding:12px 24px; background:#0088cc; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">1. Получить код в Боте</a>
+				<br><br>
+				<form action="/verify-otp" method="POST">
+					<input name="otp" placeholder="Введите 6 цифр" style="padding:10px; width:200px; text-align:center; font-size:18px;" required>
+					<br><br>
+					<button type="submit" style="padding:10px 20px; cursor:pointer;">2. Войти в кабинет</button>
+				</form>
+			</body>
+		`, BOT_LINK)
+		return
+	}
+
+	role, _ := r.Cookie("user_role")
+	name, _ := r.Cookie("user_name")
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	botLink := "https://web.telegram.org/a/#8665739584"
-
-	fmt.Fprintf(w, `
-		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:white;">
-			<div style="background:#1e293b; padding:40px; border-radius:24px; text-align:center; width:350px;">
-				<h1 style="color:#38bdf8;">HealthOS</h1>
-				<a href="%s" style="display:block; background:white; color:#0f172a; padding:15px; border-radius:12px; text-decoration:none; font-weight:bold; margin-bottom:20px;">
-				   Войти через Google
-				</a>
-				<p style="font-size:12px; color:#64748b;">Затем напишите /start боту:<br><a href="%s" style="color:#38bdf8;">Перейти в Telegram</a></p>
-			</div>
-		</body>`, googleOAuthConfig.AuthCodeURL("state"), botLink)
-}
-
-func handleCallback(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	token, err := googleOAuthConfig.Exchange(context.Background(), code)
-	if err != nil {
-		http.Redirect(w, r, "/api/auth/google", 302)
-		return
-	}
-
-	client := googleOAuthConfig.Client(context.Background(), token)
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
-	if err != nil || resp == nil {
-		http.Redirect(w, r, "/api/auth/google", 302)
-		return
-	}
-	defer resp.Body.Close()
-
-	var user struct{ Email, Name string }
-	json.NewDecoder(resp.Body).Decode(&user)
-	log.Printf("[debug] юзер: %s", user.Email)
-
-	// ИСПРАВЛЕНИЕ: Безопасное сохранение без зависимости от UNIQUE Constraint
-	var count int
-	db.QueryRow("SELECT COUNT(id) FROM appointments WHERE user_email = $1", user.Email).Scan(&count)
-
-	if count > 0 {
-		_, err = db.Exec("UPDATE appointments SET patient_name = $2, totp_secret = '' WHERE user_email = $1", user.Email, user.Name)
+	fmt.Fprintf(w, "<div style='text-align:center;'>")
+	if role.Value == "doctor" {
+		fmt.Fprintf(w, "<h1 style='color: darkblue;'>🏥 ПАНЕЛЬ ДОКТОРА</h1><h2>Добро пожаловать, %s!</h2>", name.Value)
 	} else {
-		_, err = db.Exec("INSERT INTO appointments (user_email, patient_name, totp_secret, appointment_date, doctor_name) VALUES ($1, $2, '', $3, $4)", user.Email, user.Name, time.Now(), "Dr. Smith")
+		fmt.Fprintf(w, "<h1>Личный кабинет пациента</h1><h2>Пациент: %s</h2>", name.Value)
 	}
-	if err != nil {
-		log.Printf("[DB ERROR] Ошибка записи юзера: %v", err)
-	}
-
-	http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: user.Email, Path: "/", MaxAge: 600})
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `
-		<body style="font-family:sans-serif; background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; color:white; margin:0;">
-			<form action="/verify-otp" method="POST" style="background:#1e293b; padding:40px; border-radius:24px; text-align:center;">
-				<h2>Введите код</h2>
-				<input name="otp" type="text" maxlength="6" required autofocus style="width:100%%; padding:15px; font-size:32px; text-align:center; border-radius:12px; margin-bottom:20px; border:none;">
-				<button type="submit" style="width:100%%; background:#2563eb; color:white; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer;">ВОЙТИ</button>
-			</form>
-		</body>`)
+	fmt.Fprint(w, "<br><a href='/logout' style='color:red;'>Выйти из системы</a></div>")
 }
 
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
-	input := strings.TrimSpace(r.FormValue("otp"))
-	pending, err := r.Cookie("pending_user")
-	var dbOtp, name, email string
-
-	// ИСПРАВЛЕНИЕ: COALESCE защищает от ошибки, если код равен NULL
-	query := "SELECT COALESCE(TRIM(totp_secret), ''), patient_name, user_email FROM appointments "
-	if err == nil && pending.Value != "" {
-		query += fmt.Sprintf("WHERE user_email = '%s' ", pending.Value)
-	} else {
-		query += "ORDER BY id DESC LIMIT 1 "
+	if r.Method != http.MethodPost {
+		return
 	}
+	input := r.FormValue("otp")
 
-	db.QueryRow(query).Scan(&dbOtp, &name, &email)
-	log.Printf("[debug] dbOtp: %s", dbOtp)
+	var tgID int64
+	var name string
+	err := db.QueryRow("SELECT tg_id, patient_name FROM appointments WHERE totp_secret = $1", input).Scan(&tgID, &name)
 
-	if input != "" && input == dbOtp {
-		role := "patient"
-		if email == DOCTOR_EMAIL {
-			role = "doctor"
-		}
-		setCookie(w, "user_email", email)
-		setCookie(w, "user_role", role)
-		setCookie(w, "user_name", name)
-		http.SetCookie(w, &http.Cookie{Name: "pending_user", Value: "", Path: "/", MaxAge: -1})
-		http.Redirect(w, r, "/", 302)
-	} else {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(fmt.Sprintf("<script>alert('Ошибка! Введено: %s, Ожидалось в базе: Makha lox %s'); history.back();</script>", input, dbOtp)))
-	}
-}
-
-// РЕНТГЕН БАЗЫ ДАННЫХ (Для отладки)
-func handleDebug(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, user_email, COALESCE(totp_secret, 'ПУСТО') FROM appointments ORDER BY id DESC LIMIT 15")
 	if err != nil {
-		w.Write([]byte("Ошибка БД: " + err.Error()))
+		log.Printf("[WEB ERROR] Попытка входа с неверным кодом: %s", input)
+		fmt.Fprint(w, "<h2>Ошибка! Код неверный.</h2><a href='/'>Попробовать снова</a>")
 		return
 	}
-	defer rows.Close()
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write([]byte("--- ПОСЛЕДНИЕ ЗАПИСИ В БАЗЕ (Для разработчика) ---\n\n"))
-	for rows.Next() {
-		var id int
-		var email, secret string
-		rows.Scan(&id, &email, &secret)
-		fmt.Fprintf(w, "ID: %d | Email: %s | Код: [%s]\n", id, email, secret)
+	role := "patient"
+	if tgID == MY_TG_ID {
+		role = "doctor"
 	}
-}
 
-func handleData(w http.ResponseWriter, r *http.Request) {
-	cEmail, _ := r.Cookie("user_email")
-	cRole, _ := r.Cookie("user_role")
-	if cEmail == nil {
-		return
-	}
-	if r.Method == "POST" && cRole.Value == "doctor" {
-		var req struct{ Email, Diagnosis string }
-		json.NewDecoder(r.Body).Decode(&req)
-		db.Exec("UPDATE appointments SET diagnosis = $1 WHERE user_email = $2", req.Diagnosis, req.Email)
-		return
-	}
-	rows, _ := db.Query("SELECT user_email, diagnosis, appointment_date, patient_name FROM appointments ORDER BY id DESC")
-	defer rows.Close()
-	var list []map[string]string
-	for rows.Next() {
-		var e, d, dt, n string
-		rows.Scan(&e, &d, &dt, &n)
-		if cRole.Value == "doctor" || e == cEmail.Value {
-			list = append(list, map[string]string{"email": e, "diag": d, "date": dt, "name": n})
-		}
-	}
-	json.NewEncoder(w).Encode(list)
-}
+	http.SetCookie(w, &http.Cookie{Name: "user_id", Value: fmt.Sprint(tgID), Path: "/"})
+	http.SetCookie(w, &http.Cookie{Name: "user_role", Value: role, Path: "/"})
+	http.SetCookie(w, &http.Cookie{Name: "user_name", Value: name, Path: "/"})
 
-func handleRoot(w http.ResponseWriter, r *http.Request) {
-	cEmail, err := r.Cookie("user_email")
-	if err != nil || cEmail.Value == "" {
-		http.Redirect(w, r, "/api/auth/google", 302)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<html><body style="font-family:sans-serif; background:#f1f5f9; padding:40px;">
-		<div style="max-width:600px; margin:auto; background:white; padding:30px; border-radius:20px; box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-			<h2>HealthOS Dashboard</h2><p>Юзер: <b>%s</b></p><hr><div id="list">Загрузка...</div>
-			<button onclick="location.href='/logout'" style="margin-top:20px; padding:10px; background:#ef4444; color:white; border:none; border-radius:5px;">Выйти</button>
-		</div>
-		<script>fetch('/api/data').then(r=>r.json()).then(d => { document.getElementById('list').innerHTML = d.map(i => '<p>📅 '+i.date.split('T')[0]+': '+(i.diag||'Ожидание...')+'</p>').join(''); })</script>
-	</body></html>`, cEmail.Value)
+	// Стираем код, чтобы его нельзя было использовать дважды
+	db.Exec("UPDATE appointments SET totp_secret = '' WHERE tg_id = $1", tgID)
+
+	log.Printf("[WEB] Успешный вход! ID: %d, Роль: %s", tgID, role)
+	http.Redirect(w, r, "/", 302)
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
-	for _, k := range []string{"user_email", "user_role", "user_name", "pending_user"} {
-		http.SetCookie(w, &http.Cookie{Name: k, Value: "", Path: "/", MaxAge: -1})
-	}
-	http.Redirect(w, r, "/api/auth/google", 302)
+	http.SetCookie(w, &http.Cookie{Name: "user_id", Value: "", Path: "/", MaxAge: -1})
+	http.Redirect(w, r, "/", 302)
 }
 
-func setCookie(w http.ResponseWriter, name, value string) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: 604800})
+func handleDebug(w http.ResponseWriter, r *http.Request) {
+	rows, _ := db.Query("SELECT tg_id, patient_name, totp_secret FROM appointments")
+	defer rows.Close()
+	fmt.Fprintln(w, "SYSTEM DEBUG (Current Users in DB):")
+	for rows.Next() {
+		var id int64
+		var n, s string
+		rows.Scan(&id, &n, &s)
+		fmt.Fprintf(w, "TG_ID: %d | NAME: %s | CURRENT_CODE: %s\n", id, n, s)
+	}
 }
