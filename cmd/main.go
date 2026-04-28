@@ -144,6 +144,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	var user struct{ Email, Name string }
 	json.NewDecoder(resp.Body).Decode(&user)
+	log.Printf("[debug] юзер: %s", user.Email)
 
 	// ИСПРАВЛЕНИЕ: Безопасное сохранение без зависимости от UNIQUE Constraint
 	var count int
