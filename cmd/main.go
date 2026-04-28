@@ -151,7 +151,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	if count > 0 {
 		_, err = db.Exec("UPDATE appointments SET patient_name = $2, totp_secret = '' WHERE user_email = $1", user.Email, user.Name)
 	} else {
-		_, err = db.Exec("INSERT INTO appointments (user_email, patient_name, totp_secret) VALUES ($1, $2, '')", user.Email, user.Name)
+		_, err = db.Exec("INSERT INTO appointments (user_email, patient_name, totp_secret, appointment_date, doctor_name) VALUES ($1, $2, '', $3, $4)", user.Email, user.Name, time.Now(), "Dr. Smith")
 	}
 	if err != nil {
 		log.Printf("[DB ERROR] Ошибка записи юзера: %v", err)
