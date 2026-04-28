@@ -185,7 +185,7 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db.QueryRow(query).Scan(&dbOtp, &name, &email)
-	log.Printf("[debug] dbOtp : %v", dbOtp)
+	log.Printf("[debug] dbOtp: %s", dbOtp)
 
 	if input != "" && input == dbOtp {
 		role := "patient"
