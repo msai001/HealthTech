@@ -123,37 +123,54 @@ func startTelegramBot() {
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	cID, _ := r.Cookie("user_id")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// СТИЛИ (CSS)
+	style := `
+	<style>
+		body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f4f8; color: #333; margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; }
+		.card { background: white; padding: 40px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+		h1 { color: #0056b3; margin-bottom: 10px; font-size: 28px; }
+		p { color: #666; margin-bottom: 30px; }
+		.btn-tg { display: inline-block; padding: 12px 24px; background: #0088cc; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; transition: background 0.3s; margin-bottom: 20px; }
+		.btn-tg:hover { background: #006699; }
+		input { width: 100%; padding: 12px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; font-size: 18px; text-align: center; box-sizing: border-box; }
+		button { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s; }
+		button:hover { background: #218838; }
+		.doctor-header { color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 10px; }
+		.logout-link { display: block; margin-top: 20px; color: #888; text-decoration: none; font-size: 14px; }
+		.logout-link:hover { color: #d9534f; }
+	</style>`
+
 	if cID == nil || cID.Value == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `
-			<body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+			%s
+			<div class="card">
 				<h1>HealthOS</h1>
-				<p>Авторизация через защищенный канал Telegram</p>
-				<a href="%s" target="_blank" style="display:inline-block; padding:12px 24px; background:#0088cc; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">1. Получить код в Боте</a>
-				<br><br>
+				<p>Вход в защищенную систему</p>
+				<a href="%s" target="_blank" class="btn-tg">1. Получить код в Telegram</a>
 				<form action="/verify-otp" method="POST">
-					<input name="otp" placeholder="Введите 6 цифр" style="padding:10px; width:200px; text-align:center; font-size:18px;" required>
-					<br><br>
-					<button type="submit" style="padding:10px 20px; cursor:pointer;">2. Войти в кабинет</button>
+					<input name="otp" placeholder="Код (6 цифр)" maxlength="6" required>
+					<button type="submit">2. Подтвердить вход</button>
 				</form>
-			</body>
-		`, BOT_LINK)
+			</div>
+		`, style, BOT_LINK)
 		return
 	}
 
 	role, _ := r.Cookie("user_role")
 	name, _ := r.Cookie("user_name")
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "<div style='text-align:center;'>")
-	if role.Value == "doctor" {
-		fmt.Fprintf(w, "<h1 style='color: darkblue;'>🏥 ПАНЕЛЬ ДОКТОРА</h1><h2>Добро пожаловать, %s!</h2>", name.Value)
+	fmt.Fprintf(w, "%s<div class='card'>", style)
+	if role != nil && role.Value == "doctor" {
+		fmt.Fprintf(w, "<h1 class='doctor-header'>🏥 Панель доктора</h1><p>Добро пожаловать в систему управления, <b>%s</b></p>", name.Value)
+		fmt.Fprint(w, "<div style='text-align: left; background: #fff5f5; padding: 10px; border-radius: 5px; font-size: 14px;'>• Управление записями<br>• Доступ к базе пациентов</div>")
 	} else {
-		fmt.Fprintf(w, "<h1>Личный кабинет пациента</h1><h2>Пациент: %s</h2>", name.Value)
+		fmt.Fprintf(w, "<h1>Личный кабинет</h1><p>Пациент: <b>%s</b></p>", name.Value)
+		fmt.Fprint(w, "<div style='text-align: left; background: #f0f9ff; padding: 10px; border-radius: 5px; font-size: 14px;'>• Мои анализы<br>• История посещений</div>")
 	}
-	fmt.Fprint(w, "<br><a href='/logout' style='color:red;'>Выйти из системы</a></div>")
+	fmt.Fprint(w, "<a href='/logout' class='logout-link'>Выйти из системы</a></div>")
 }
-
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		return
