@@ -14,9 +14,9 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// !!! ЗАМЕНИ НА СВОЙ ID И ССЫЛКУ !!!
-const MY_TG_ID = 58392011
-const BOT_LINK = "https://t.me/health_os_bot"
+// !!! ОБЯЗАТЕЛЬНО ПРОВЕРЬ ЭТИ ДАННЫЕ !!!
+const MY_TG_ID = 58392011                     // Твой ID
+const BOT_LINK = "https://t.me/health_os_bot" // Ссылка на бота
 
 var db *sql.DB
 
@@ -27,11 +27,11 @@ func main() {
 	var err error
 	db, err = sql.Open("postgres", dbURL)
 	if err != nil {
-		log.Printf("DB Error: %v", err)
+		log.Printf("[DB ERROR] Ошибка открытия: %v", err)
 	}
 
-	// Создаем таблицу, если её нет
-	_, _ = db.Exec(`
+	// Инициализация таблицы
+	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS appointments (
 			id SERIAL PRIMARY KEY,
 			tg_id BIGINT UNIQUE,
@@ -39,10 +39,14 @@ func main() {
 			totp_secret TEXT,
 			diagnosis TEXT DEFAULT 'Диагноз еще не поставлен'
 		)`)
+	if err != nil {
+		log.Printf("[DB ERROR] Ошибка создания таблицы: %v", err)
+	}
 
-	// ЗАПУСК БОТА (Полный цикл)
+	// Запуск бота в отдельном потоке
 	go startTelegramBot()
 
+	// Маршруты сервера
 	http.HandleFunc("/", handleRoot)
 	http.HandleFunc("/verify-otp", handleVerifyOTP)
 	http.HandleFunc("/save-diagnosis", handleSaveDiagnosis)
@@ -53,23 +57,23 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Server live on port %s", port)
+	log.Printf("[SERVER] Запуск на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func startTelegramBot() {
 	token := os.Getenv("TELEGRAM_APITOKEN")
 	if token == "" {
+		log.Println("[TG ERROR] Токен не найден в Environment Variables!")
 		return
 	}
 	apiURL := "https://api.telegram.org/bot" + token + "/"
 	offset := 0
 
-	log.Println("Бот начал опрос Telegram API...")
+	log.Println("[TG] Бот начал опрос обновлений...")
 
 	for {
-		// Long Polling
-		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=20", apiURL, offset))
+		resp, err := http.Get(fmt.Sprintf("%sgetUpdates?offset=%d&timeout=15", apiURL, offset))
 		if err != nil || resp == nil {
 			time.Sleep(5 * time.Second)
 			continue
@@ -87,19 +91,18 @@ func startTelegramBot() {
 			} `json:"result"`
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&updates); err != nil {
-			resp.Body.Close()
-			continue
-		}
+		json.NewDecoder(resp.Body).Decode(&updates)
 		resp.Body.Close()
 
 		for _, u := range updates.Result {
 			if strings.HasPrefix(u.Message.Text, "/start") {
-				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 				tgID := u.Message.Chat.ID
 				name := u.Message.From.FirstName
+				code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
-				// Записываем в базу
+				log.Printf("[TG] Получен /start от %s (ID: %d)", name, tgID)
+
+				// Сохраняем в БД
 				_, dbErr := db.Exec(`
 					INSERT INTO appointments (tg_id, patient_name, totp_secret) 
 					VALUES ($1, $2, $3) 
@@ -107,11 +110,17 @@ func startTelegramBot() {
 					tgID, name, code)
 
 				if dbErr != nil {
-					log.Printf("Ошибка записи кода: %v", dbErr)
+					log.Printf("[DB ERROR] Не удалось сохранить код: %v", dbErr)
+					continue
+				}
+
+				// ОТПРАВКА ОТВЕТА (sendMessage)
+				sendURL := fmt.Sprintf("%ssendMessage?chat_id=%d&text=Ваш код HealthOS: %s", apiURL, tgID, code)
+				_, sendErr := http.Get(sendURL)
+				if sendErr != nil {
+					log.Printf("[TG ERROR] Ошибка отправки: %v", sendErr)
 				} else {
-					log.Printf("Код %s сгенерирован для %s", code, name)
-					// Используем sendMessage вместо getUpdates для отправки
-					http.Get(fmt.Sprintf("%ssendMessage?chat_id=%d&text=Ваш код HealthOS: %s", apiURL, tgID, code))
+					log.Printf("[TG] Код %s успешно отправлен для %s", code, name)
 				}
 			}
 			offset = u.UpdateID + 1
@@ -119,48 +128,58 @@ func startTelegramBot() {
 	}
 }
 
+// --- ВЕБ ИНТЕРФЕЙС ---
+
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cID, _ := r.Cookie("user_id")
 
-	// СТИЛЬ
-	fmt.Fprint(w, "<style>body{font-family:sans-serif; background:#f4f7f9; text-align:center; padding-top:50px;} .card{background:white; display:inline-block; padding:30px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,0.1);}</style>")
+	style := `
+	<style>
+		body { font-family: 'Segoe UI', sans-serif; background: #f4f7f9; text-align: center; padding-top: 50px; }
+		.card { background: white; display: inline-block; padding: 40px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 350px; }
+		input { width: 100%; padding: 12px; margin: 15px 0; border: 1px solid #ddd; border-radius: 8px; text-align: center; font-size: 18px; box-sizing: border-box; }
+		button { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
+		.btn-tg { color: #0088cc; text-decoration: none; font-weight: bold; }
+	</style>`
 
 	if cID == nil || cID.Value == "" {
-		fmt.Fprintf(w, "<div class='card'><h1>HealthOS</h1><p>Нажмите /start в боте</p><a href='%s' target='_blank'>Перейти к боту</a><br><br><form action='/verify-otp' method='POST'><input name='otp' placeholder='Код' style='padding:10px; text-align:center;' required><br><br><button style='padding:10px 20px; background:#28a745; color:white; border:none; border-radius:5px;'>Войти</button></form></div>", BOT_LINK)
+		fmt.Fprintf(w, "%s<div class='card'><h1>HealthOS</h1><p>Введите код из Telegram</p><a href='%s' target='_blank' class='btn-tg'>Открыть бота</a><form action='/verify-otp' method='POST'><input name='otp' placeholder='000000' maxlength='6' required><button type='submit'>Войти</button></form></div>", style, BOT_LINK)
 		return
 	}
 
 	role, _ := r.Cookie("user_role")
 	name, _ := r.Cookie("user_name")
 
-	fmt.Fprintf(w, "<div class='card'>")
-	if role.Value == "doctor" {
-		fmt.Fprintf(w, "<h1>👨‍⚕️ Кабинет Доктора</h1><p>Доктор: %s</p><hr>", name.Value)
+	fmt.Fprintf(w, "%s<div class='card'>", style)
+	if role != nil && role.Value == "doctor" {
+		fmt.Fprintf(w, "<h2 style='color:#d9534f'>👨‍⚕️ Кабинет Доктора</h2><p>Привет, %s</p><hr>", name.Value)
 		rows, _ := db.Query("SELECT tg_id, patient_name, diagnosis FROM appointments WHERE tg_id != $1", MY_TG_ID)
-		for rows.Next() {
-			var pID int64
-			var pName, pDiag string
-			rows.Scan(&pID, &pName, &pDiag)
-			fmt.Fprintf(w, "<div style='margin-bottom:10px;'>%s: <form action='/save-diagnosis' method='POST' style='display:inline;'><input type='hidden' name='tg_id' value='%d'><input name='diagnosis' value='%s'><button>OK</button></form></div>", pName, pID, pDiag)
+		if rows != nil {
+			for rows.Next() {
+				var pID int64
+				var pName, pDiag string
+				rows.Scan(&pID, &pName, &pDiag)
+				fmt.Fprintf(w, "<div style='text-align:left; margin-bottom:15px;'><b>%s</b><form action='/save-diagnosis' method='POST'><input type='hidden' name='tg_id' value='%d'><input name='diagnosis' value='%s' style='font-size:14px; padding:5px;'><button style='padding:5px; font-size:12px;'>Обновить</button></form></div>", pName, pID, pDiag)
+			}
+			rows.Close()
 		}
-		rows.Close()
 	} else {
-		var d string
-		db.QueryRow("SELECT diagnosis FROM appointments WHERE tg_id = $1", cID.Value).Scan(&d)
-		fmt.Fprintf(w, "<h1>🏥 Кабинет Пациента</h1><p>Добро пожаловать, %s</p><div style='background:#e7f3ff; padding:15px;'><b>Ваш диагноз:</b> %s</div>", name.Value, d)
+		var diag string
+		db.QueryRow("SELECT diagnosis FROM appointments WHERE tg_id = $1", cID.Value).Scan(&diag)
+		fmt.Fprintf(w, "<h2>🏥 Моя Карта</h2><p>Пациент: %s</p><div style='background:#eefbff; padding:15px; border-radius:10px; text-align:left;'><b>Диагноз:</b><br>%s</div>", name.Value, diag)
 	}
-	fmt.Fprint(w, "<br><br><a href='/logout'>Выйти</a></div>")
+	fmt.Fprint(w, "<br><a href='/logout' style='color:#999; font-size:12px;'>Выйти</a></div>")
 }
 
 func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
-	input := r.FormValue("otp")
+	otp := r.FormValue("otp")
 	var tgID int64
 	var name string
-	err := db.QueryRow("SELECT tg_id, patient_name FROM appointments WHERE totp_secret = $1", input).Scan(&tgID, &name)
+	err := db.QueryRow("SELECT tg_id, patient_name FROM appointments WHERE totp_secret = $1", otp).Scan(&tgID, &name)
 
 	if err != nil {
-		fmt.Fprint(w, "Неверный код! <a href='/'>Назад</a>")
+		fmt.Fprint(w, "<h1>Ошибка</h1><p>Неверный код!</p><a href='/'>Назад</a>")
 		return
 	}
 
@@ -172,7 +191,6 @@ func handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "user_id", Value: fmt.Sprint(tgID), Path: "/"})
 	http.SetCookie(w, &http.Cookie{Name: "user_role", Value: role, Path: "/"})
 	http.SetCookie(w, &http.Cookie{Name: "user_name", Value: name, Path: "/"})
-	// Стираем код
 	db.Exec("UPDATE appointments SET totp_secret = '' WHERE tg_id = $1", tgID)
 	http.Redirect(w, r, "/", 302)
 }
@@ -184,7 +202,5 @@ func handleSaveDiagnosis(w http.ResponseWriter, r *http.Request) {
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "user_id", Value: "", Path: "/", MaxAge: -1})
-	http.SetCookie(w, &http.Cookie{Name: "user_role", Value: "", Path: "/", MaxAge: -1})
-	http.SetCookie(w, &http.Cookie{Name: "user_name", Value: "", Path: "/", MaxAge: -1})
 	http.Redirect(w, r, "/", 302)
 }
