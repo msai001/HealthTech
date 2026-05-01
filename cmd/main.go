@@ -114,16 +114,19 @@ func startTelegramBot() {
 					continue
 				}
 
-				// ОТПРАВКА ОТВЕТА (sendMessage)
+				// Формируем URL именно для отправки сообщения
 				sendURL := fmt.Sprintf("%ssendMessage?chat_id=%d&text=Ваш код HealthOS: %s", apiURL, tgID, code)
-				_, sendErr := http.Get(sendURL)
-				if sendErr != nil {
-					log.Printf("[TG ERROR] Ошибка отправки: %v", sendErr)
+
+				// Выполняем запрос
+				resp, err := http.Get(sendURL)
+				if err != nil {
+					log.Printf("[TG ERROR] Ошибка сети: %v", err)
 				} else {
-					log.Printf("[TG] Код %s успешно отправлен для %s", code, name)
+					// Важно закрыть тело ответа, чтобы не забивать память
+					resp.Body.Close()
+					log.Printf("[TG] Код успешно отправлен в чат %d", tgID)
 				}
 			}
-			offset = u.UpdateID + 1
 		}
 	}
 }
