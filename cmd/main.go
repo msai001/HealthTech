@@ -10,7 +10,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// Твой ID для роли доктора
 const MY_TG_ID = 58392011
 
 var db *sql.DB
@@ -20,10 +19,9 @@ func main() {
 	var err error
 	db, err = sql.Open("postgres", dbURL)
 	if err != nil {
-		log.Printf("Ошибка БД: %v", err)
+		log.Fatal(err)
 	}
 
-	// Инициализация таблицы с колонкой диагноза
 	if db != nil {
 		_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS appointments (
 			id SERIAL PRIMARY KEY,
@@ -32,9 +30,9 @@ func main() {
 			diagnosis TEXT DEFAULT 'Диагноз не установлен'
 		)`)
 
-		// Добавим тестового пациента для демонстрации, если таблица пуста
+		// Добавим пару разных пациентов для теста
 		_, _ = db.Exec(`INSERT INTO appointments (tg_id, patient_name, diagnosis) 
-			VALUES (123, 'Иван Иванов (Тест)', 'Требуется осмотр') 
+			VALUES (123, 'Иван Иванов', 'Диагноз не установлен'), (456, 'Алия Серикова', 'Грипп, покой') 
 			ON CONFLICT DO NOTHING`)
 	}
 
@@ -47,7 +45,6 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("HealthOS запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
@@ -55,63 +52,95 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	cID, _ := r.Cookie("user_id")
 
+	// Расширенный CSS со стилями для поиска и статусов
 	style := `
 	<style>
-		body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
-		.container { max-width: 800px; margin: 0 auto; }
-		.card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-		h1 { color: #1a73e8; margin-top: 0; }
-		.patient-item { border-bottom: 1px solid #eee; padding: 15px 0; display: flex; justify-content: space-between; align-items: center; }
-		input[type="text"] { padding: 8px; border: 1px solid #ddd; border-radius: 6px; width: 60%; }
-		.btn { background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
-		.btn:hover { background: #1557b0; }
-		.logout { color: #666; text-decoration: none; font-size: 14px; }
-	</style>`
+		body { font-family: 'Inter', sans-serif; background: #f8f9fa; margin: 0; padding: 20px; color: #333; }
+		.container { max-width: 900px; margin: 0 auto; }
+		.card { background: white; padding: 25px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); margin-bottom: 20px; }
+		.header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #1a73e8; padding-bottom: 15px; }
+		.search-box { width: 100%; padding: 12px; margin: 20px 0; border: 1px solid #ddd; border-radius: 10px; font-size: 16px; }
+		.patient-item { background: #fff; border: 1px solid #eee; padding: 20px; border-radius: 12px; margin-bottom: 10px; transition: 0.3s; }
+		.patient-item:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+		.status-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+		.status-none { background: #ffe8e8; color: #d9534f; }
+		.status-ok { background: #e8f5e9; color: #2e7d32; }
+		.btn { background: #1a73e8; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
+		.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+		.stat-card { background: #fff; padding: 15px; border-radius: 12px; text-align: center; border: 1px solid #eee; }
+	</style>
+	<script>
+		function filterPatients() {
+			let input = document.getElementById('search').value.toLowerCase();
+			let items = document.getElementsByClassName('patient-item');
+			for (let i = 0; i < items.length; i++) {
+				let name = items[i].getElementsByClassName('p-name')[0].innerText.toLowerCase();
+				items[i].style.display = name.includes(input) ? "" : "none";
+			}
+		}
+	</script>`
 
 	if cID == nil || cID.Value == "" {
-		fmt.Fprintf(w, "%s<div class='container'><div class='card'><h1>HealthOS Login</h1><form action='/verify-otp' method='POST'><input name='otp' placeholder='Введите любой код' style='width:100%%; padding:10px; margin-bottom:10px;'><br><button class='btn' style='width:100%%'>Войти в систему</button></form></div></div>", style)
+		fmt.Fprintf(w, "%s<div class='container'><div class='card'><h1>HealthOS</h1><form action='/verify-otp' method='POST'><button class='btn' style='width:100%%'>Войти как Главврач</button></form></div></div>", style)
 		return
 	}
 
+	// Считаем статистику
+	var total, diagnosed int
+	_ = db.QueryRow("SELECT COUNT(*) FROM appointments").Scan(&total)
+	_ = db.QueryRow("SELECT COUNT(*) FROM appointments WHERE diagnosis != 'Диагноз не установлен'").Scan(&diagnosed)
+
 	fmt.Fprintf(w, "%s<div class='container'>", style)
-	fmt.Fprintf(w, "<div class='card'><h1>👨‍⚕️ Панель управления HealthOS</h1><p>Текущий врач: <b>Admin</b></p><a href='/logout' class='logout'>Выйти из системы</a></div>")
+	fmt.Fprintf(w, `
+		<div class="card header">
+			<h1>🏥 HealthOS Dashboard</h1>
+			<a href="/logout" style="color: #666; text-decoration: none;">Выйти</a>
+		</div>
 
-	fmt.Fprintf(w, "<div class='card'><h3>Список пациентов и назначений</h3>")
+		<div class="stats-grid">
+			<div class="stat-card"><b>Всего</b><br><span style="font-size:24px">%d</span></div>
+			<div class="stat-card"><b>С диагнозом</b><br><span style="font-size:24px; color: green">%d</span></div>
+			<div class="stat-card"><b>Ожидают</b><br><span style="font-size:24px; color: orange">%d</span></div>
+		</div>
 
-	// Тянем данные из базы
+		<input type="text" id="search" class="search-box" onkeyup="filterPatients()" placeholder="Поиск по фамилии пациента...">
+	`, total, diagnosed, total-diagnosed)
+
 	if db != nil {
-		rows, err := db.Query("SELECT tg_id, patient_name, diagnosis FROM appointments")
-		if err == nil {
-			for rows.Next() {
-				var tid int64
-				var name, diag string
-				rows.Scan(&tid, &name, &diag)
-				fmt.Fprintf(w, `
-					<div class="patient-item">
-						<div style="width: 30%%"><b>%s</b><br><small>ID: %d</small></div>
-						<form action="/save-diagnosis" method="POST" style="width: 70%%; display: flex; gap: 10px;">
-							<input type="hidden" name="tg_id" value="%d">
-							<input type="text" name="diag" value="%s">
-							<button class="btn" type="submit">OK</button>
-						</form>
-					</div>`, name, tid, tid, diag)
+		rows, _ := db.Query("SELECT tg_id, patient_name, diagnosis FROM appointments ORDER BY id DESC")
+		for rows.Next() {
+			var tid int64
+			var name, diag string
+			rows.Scan(&tid, &name, &diag)
+
+			badgeClass := "status-ok"
+			statusText := "Обработан"
+			if diag == "Диагноз не установлен" {
+				badgeClass = "status-none"
+				statusText = "Новый"
 			}
-			rows.Close()
+
+			fmt.Fprintf(w, `
+				<div class="patient-item">
+					<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+						<span class="p-name" style="font-size: 18px; font-weight: bold;">%s</span>
+						<span class="status-badge %s">%s</span>
+					</div>
+					<form action="/save-diagnosis" method="POST" style="display: flex; gap: 10px;">
+						<input type="hidden" name="tg_id" value="%d">
+						<input type="text" name="diag" value="%s" style="flex-grow: 1; padding: 10px; border-radius: 8px; border: 1px solid #ddd;">
+						<button class="btn" type="submit">Сохранить</button>
+					</form>
+				</div>`, name, badgeClass, statusText, tid, diag)
 		}
+		rows.Close()
 	}
-	fmt.Fprintf(w, "</div></div>")
+	fmt.Fprintf(w, "</div>")
 }
 
 func handleSaveDiagnosis(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
-		tid := r.FormValue("tg_id")
-		diag := r.FormValue("diag")
-		if db != nil {
-			_, err := db.Exec("UPDATE appointments SET diagnosis = $1 WHERE tg_id = $2", diag, tid)
-			if err != nil {
-				log.Printf("Ошибка сохранения: %v", err)
-			}
-		}
+		db.Exec("UPDATE appointments SET diagnosis = $1 WHERE tg_id = $2", r.FormValue("diag"), r.FormValue("tg_id"))
 	}
 	http.Redirect(w, r, "/", 302)
 }
